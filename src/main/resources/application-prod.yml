@@ -1,0 +1,7 @@
+# Activate with SPRING_PROFILES_ACTIVE=prod.
+# Provide the database via SPRING_DATASOURCE_URL / SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

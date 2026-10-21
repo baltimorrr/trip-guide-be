@@ -1,0 +1,9 @@
+# Local development: the default profile when none is set. Not active under prod or test.
+spring:
+  config:
+    # Local secrets live in a gitignored .env file at the project root.
+    import: optional:file:.env[.properties]
+  docker:
+    compose:
+      # Leave the database running between app restarts.
+      lifecycle-management: start-only

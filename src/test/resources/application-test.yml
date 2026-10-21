@@ -1,0 +1,15 @@
+# Test-only configuration, activated by @IntegrationTest via @ActiveProfiles("test").
+# The datasource comes from TestcontainersConfiguration (@ServiceConnection), so none is set here.
+
+app:
+  jwt:
+    # TEST ONLY. Real secrets come from APP_JWT_SECRET and are never committed.
+    secret: dGVzdC1vbmx5LWp3dC1zZWNyZXQtbmV2ZXItdXNlLWl0LWFueXdoZXJlLWVsc2U=
+    issuer: spring-base
+    access-token-ttl: 15m
+  bootstrap:
+    admin:
+      email: admin@test.local
+      password: admin-test-password-123
+  cors:
+    allowed-origins: ""
