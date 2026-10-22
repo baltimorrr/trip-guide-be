@@ -10,12 +10,21 @@ sample feature that shows every convention end to end. `README.md` has the endpo
 notes and the "Adding a feature" checklist.
 
 `USER_STORIES.md` and `DATABASE-SCHEMA.md` (dbdiagram.io DBML, 54 tables) describe the Hotel Booking Platform this base
-is meant to become. The code does not implement it yet. The schema doc uses different conventions from the base:
-`uuid` ids, `citext` emails, timestamps defaulted by the database, no `version` column, money as `bigint *_minor` plus a
-`char(3)` currency, Postgres enums, roles `customer/hotel_owner/hotel_staff/admin` (code has `USER/ADMIN`), and
-refresh-token sessions. It says it was generated from a `schema.sql` (PostgreSQL 16) that is the source of truth, and
-that file is not in this repo. Before implementing those tables, ask the user which conventions win. Don't pick
-silently.
+is meant to become. Implemented so far: the homepage stories C-HOME-01/02/03 (`search/`, `destination/`, migration V3)
+and the admin slice of A-CONT-01 that curates destinations. The schema doc says it was generated from a `schema.sql`
+that is not in this repo.
+
+**Decided (2026-10-21): new tables keep the schema doc's table and column names but follow this project's
+conventions.** That means identity `bigint` ids, a `version` column, and `created_at`/`updated_at` set by auditing.
+Enum-like columns are `varchar` + CHECK holding the Java enum names (UPPERCASE). `char(n)` becomes `varchar(n)` + a
+regex CHECK, and `citext` becomes `varchar` stored lowercased. Tables with a composite natural key in the doc
+(`room_inventory`) keep it without id/version, like `user_roles`. A foreign key to a table that doesn't exist yet
+(e.g. `hotels.currency` → `currencies`) is added by the migration that creates that table. **Decided (2026-10-22):**
+`destinations` also stores spellings (`state_province`, `city`, `district`, `ward`), and its `*_key` columns
+are generated from them. The doc's `destinations` table was edited by hand to match,
+so it no longer matches that `schema.sql`. Still open for later
+stories: roles (`customer/hotel_owner/hotel_staff/admin` vs code's `USER/ADMIN`) and refresh-token sessions. Ask
+before changing either.
 
 ## Commands
 
@@ -85,6 +94,51 @@ email are left to unique constraints, which surface as 409.
 `AdminBootstrap` (an `ApplicationRunner`) creates an ADMIN+USER account from `APP_BOOTSTRAP_ADMIN_*` if that email does
 not exist yet. It never changes an existing account.
 
+**Hotel catalog and search.** The SQL function `norm()` (V3: `unaccent`, lowercase, collapsed spaces) is the only
+name normalizer, so Java never re-implements it. The database generates these `destinations` columns:
+
+- `normalized_name` = `norm(name)`
+- each `*_key` = `norm()` of its stored spelling, `''` when there is none. The keys are the place's identity
+  (unique index, matching addresses), so a stored spelling must always normalize to its key.
+
+Place autocomplete is pg_trgm word similarity on `normalized_name` only. Matching on the places around a name
+(`hai chau da nang`) is deferred (C-HOME-07). Suggestions join the COUNTRY row for the country in their label, so no
+row keeps a copy of a country's name.
+
+The rest works as follows:
+
+- Repositories follow the services pattern.
+  - `XRepository extends JpaRepository<X, Long>, XRepositoryCustom` declares only what Spring Data generates:
+    CRUD and derived queries.
+  - Every hand-written query is declared in `XRepositoryCustom` and implemented in
+    `repository/impl/XRepositoryImpl` with `EntityManager`. No `@Query` on the interfaces.
+  - Spring Data finds the impl by the `Impl` suffix and merges it into the `XRepository` bean, so callers inject
+    only `XRepository`. Keep the name `XRepositoryImpl`: with a name it doesn't recognise, Spring Data tries to
+    derive those methods from their names and startup fails.
+  - `DestinationSyncRepository` has nothing to generate, so it is a plain interface plus a `@Repository` impl.
+  - Results of hand-written queries are records built by JPQL `select new ...` (`...View`).
+- In those impls: JPQL first. `DatabaseFunctionContributor` (`common/persistence`) registers `norm()` for JPQL,
+  plus pg_trgm's `word_similar(a, b)` (renders `a <% b`, indexable) and `word_similarity(a, b)`. Hibernate
+  renders them as-is, so the indexes still apply. Native SQL (`createNativeQuery`) is only for what JPQL can't
+  express well, with a comment saying why:
+  - the per-night availability check in `HotelRepositoryImpl`. It returns hotel ids only; JPQL loads the cards.
+  - the bulk `ON CONFLICT` insert, the spelling refresh (both `mode()`) and the advisory lock in
+    `DestinationSyncRepositoryImpl`.
+
+  No `JdbcClient` repositories.
+- Shared query fragments: `HotelJpql` holds "hotel is listed", "address inside destination" and the hotel card
+  select. `HotelSql` holds the SQL twins used by the native queries; change both together.
+- Hibernate's PostgreSQL dialect renders `like ... escape ''`. LIKE on typed text must therefore end with an explicit
+  backslash escape (`escape '\\'` in the Java text block, `escape '\'` in SQL), because the service escapes `\`, `%`
+  and `_` with backslashes. Don't end a text-block line with a space before the closing quotes (Java strips it);
+  write `\s`.
+- `DestinationSyncJob` runs the sync on startup and on `app.destinations.sync.cron`. The sync inserts new places and
+  refreshes their spellings (most common among the place's hotels, chosen once per place and reused by the places
+  inside it) and `hotel_count`. Admin-owned columns (`name`, `image_url`, `featured_rank`) are never written by it,
+  and the `Destination` entity marks the sync-owned columns `updatable = false`.
+- Search is stateless. Every criterion is a GET parameter, and the browser keeps the "last search" itself.
+- Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels).
+
 ## Tests
 
 - Full-app tests use only `@IntegrationTest` (`src/test/.../support`), so the whole run shares one Spring context and
@@ -94,6 +148,12 @@ not exist yet. It never changes an existing account.
   assert only on that, never on counts or on an empty table.
 - `TestAuth` provides `userToken(mvc)`, `adminToken(mvc)` (the bootstrap admin from `application-test.yml`) and
   `bearer(token)`. Tests use the AssertJ `MockMvcTester` API.
+- `CatalogFixtures` inserts partners, hotels, room types, inventory and photos with `JdbcClient` (test code only),
+  since no hotel write API exists yet. Give every place and hotel a `uniqueSuffix()`, call
+  `DestinationSyncService.sync()` yourself (the `test` profile disables the schedule), and assert only on your own
+  slugs. Featured and popular lists are
+  shared by all tests, so assert relative order, not positions.
+- JDBC reads `smallint` back as `Integer`, not `Short`.
 - A `@DataJpaTest` needs `@AutoConfigureTestDatabase(replace = NONE)`, `@Import({TestcontainersConfiguration.class,
   JpaAuditingConfig.class})` and `@ActiveProfiles("test")`. Without the auditing import, inserts fail on the not-null
   timestamp columns.
@@ -117,4 +177,7 @@ not exist yet. It never changes an existing account.
   an over-long password as bad credentials.
 - List endpoints return `PageResponse.from(page)`, never a raw `Page`. The page size is capped at 100 globally.
 - README "Known limitations" lists gaps left in on purpose: no refresh tokens or revocation, and no login rate
-  limiting. The hotel user stories require both.
+  limiting. The hotel user stories require both. It also covers the limits of the hotel search (availability only,
+  even split of guests per room).
+- Public endpoints need a `permitAll` matcher in `SecurityConfig` and an empty `@SecurityRequirements` on the
+  operation. Admin endpoints live under `/api/admin/**` with a class-level `@PreAuthorize("hasRole('ADMIN')")`.

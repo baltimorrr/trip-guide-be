@@ -286,13 +286,17 @@ Table destinations {
 id uuid [pk, default: `gen_random_uuid()`]
 type destination_type [not null]
 name text [not null, note: 'display name, e.g. "Đà Nẵng" (admin may edit)']
-normalized_name text [not null, note: 'norm(name), for autocomplete prefix search']
+normalized_name text [not null, note: 'generated: norm(name)']
 slug text [not null, unique, note: 'vn-da-nang']
 country_code char(2) [not null]
-province_key text [not null, default: '', note: 'norm(addresses.state_province)']
-city_key text [not null, default: '', note: 'norm(addresses.city)']
-district_key text [not null, default: '', note: 'norm(addresses.district)']
-ward_key text [not null, default: '', note: 'norm(addresses.ward)']
+state_province text [note: 'most common spelling of addresses.state_province among the hotels here']
+city text [note: 'most common spelling of addresses.city; null below the level of the place']
+district text [note: 'most common spelling of addresses.district; null below the level of the place']
+ward text [note: 'most common spelling of addresses.ward; null below the level of the place']
+province_key text [not null, note: 'generated: norm(state_province), empty string when null']
+city_key text [not null, note: 'generated: norm(city), empty string when null']
+district_key text [not null, note: 'generated: norm(district), empty string when null']
+ward_key text [not null, note: 'generated: norm(ward), empty string when null']
 source destination_source [not null, default: 'sync']
 hotel_count integer [not null, default: 0, note: 'active hotels here, refreshed by the sync']
 last_synced_at timestamptz
@@ -301,13 +305,13 @@ center_lat numeric(9,6) [note: 'city centre, for "distance from centre"']
 center_lng numeric(9,6)
 timezone text [note: 'e.g. Asia/Ho_Chi_Minh']
 image_url text
-featured_rank smallint [note: 'not null = shown on homepage']
+featured_rank smallint [note: 'admins pick which destinations appear in the homepage "popular destinations" section, and in what order: not null = shown, lowest first']
 deleted_at timestamptz [note: 'soft delete']
 created_at timestamptz [not null, default: `now()`]
 updated_at timestamptz [not null, default: `now()`]
 
 indexes {
-normalized_name [name: 'destination_autocomplete', note: 'partial: WHERE ((deleted_at IS NULL) AND (hotel_count > 0))']
+normalized_name [name: 'destination_autocomplete', note: 'gin (normalized_name gin_trgm_ops), partial: WHERE ((deleted_at IS NULL) AND (hotel_count > 0))']
 (country_code, province_key, city_key, district_key, ward_key) [name: 'destination_place_key', note: 'UNIQUE only WHERE (deleted_at IS NULL)']
 featured_rank [name: 'destinations_featured_rank_idx', note: 'partial: WHERE (featured_rank IS NOT NULL)']
 }
@@ -318,11 +322,18 @@ No parent column: the level a place belongs to is read from its keys
 (a ward with city_key 'da nang' is inside the city row with the same keys).
 A lookup table SYNCED FROM addresses (no foreign key between them):
 sync_destinations() copies every country / city / district / ward used by an
-active hotel's address into this table and refreshes hotel_count.
+active hotel's address into this table, refreshes the stored spellings (the most
+common one among the place's hotels, reused by the places inside it) and
+refreshes hotel_count.
+The *_key columns are generated from the spellings, so every spelling that
+normalises alike is one place, and a stored spelling always normalises to its key.
 Admins then add what addresses cannot give: images, featured order, centre point,
 a nicer display name. The sync never overwrites those columns.
 Search finds hotels by matching the *_key columns against the same normalised
 fields of addresses (norm(city), norm(district)…), see queries.sql Q1.
+Autocomplete matches the name only (pg_trgm word similarity, text <% normalized_name),
+so a half-typed "hai ch" and the typo "hai chua" both find Hải Châu. Suggestions
+join the country row for the country shown in their label.
 CHECK ((country_code ~ '^[A-Z]{2}$'::text))
 CHECK (((normalized_name <> ''::text) AND (normalized_name = lower(normalized_name))))
 CHECK ((hotel_count >= 0))

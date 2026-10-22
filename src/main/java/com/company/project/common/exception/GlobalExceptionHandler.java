@@ -41,8 +41,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	@Override
 	protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException ex,
 			HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+		// A binding failure (e.g. "abc" for a date) has a default message that quotes the value; replace it.
 		List<ValidationError> errors = ex.getBindingResult().getFieldErrors().stream()
-				.map(error -> new ValidationError(error.getField(), error.getDefaultMessage()))
+				.map(error -> new ValidationError(error.getField(),
+						error.isBindingFailure() ? "has an invalid value" : error.getDefaultMessage()))
 				.toList();
 		ProblemDetail problem = validationProblem(errors);
 		return handleExceptionInternal(ex, problem, headers, HttpStatus.BAD_REQUEST, request);

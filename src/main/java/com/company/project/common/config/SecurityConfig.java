@@ -45,6 +45,8 @@ public class SecurityConfig {
 				.formLogin(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(auth -> auth
 						.requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login").permitAll()
+						// Homepage: guests search without an account.
+						.requestMatchers(HttpMethod.GET, "/api/search/**", "/api/destinations/**").permitAll()
 						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
 						// API docs; the prod profile switches springdoc off entirely.
 						.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()

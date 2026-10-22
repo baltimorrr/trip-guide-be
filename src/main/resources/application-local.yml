@@ -7,3 +7,6 @@ spring:
     compose:
       # Leave the database running between app restarts.
       lifecycle-management: start-only
+  flyway:
+    # db/seed holds demo hotels and featured destinations for local development only.
+    locations: classpath:db/migration,classpath:db/seed

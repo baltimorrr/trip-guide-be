@@ -1,6 +1,6 @@
 # Hotel Booking Platform – User Stories
 
-Last updated: 19 Oct 2026 · matches database design `hotel_booking.dbml` (54 tables)
+Last updated: 22 Oct 2026 · matches database design `hotel_booking.dbml` (54 tables)
 
 ## Changes in this version
 
@@ -13,6 +13,7 @@ Updated to match the decisions taken during the database design. Changed stories
 | Hotel address is a structured record (street, ward, district, city, province, country, coordinates), one per hotel | O-HOTEL-01, C-SRCH-06, C-HOTEL-01 |
 | Destinations are synced from hotel addresses (country, city, district, ward); admins add images, featured order and display names | C-HOME-01, C-HOME-03, A-CONT-01, A-CONT-02 |
 | Search history is not stored; "last search" lives in the browser; recommendations stay "Later" | C-HOME-02, C-HOME-04 |
+| Location suggestions match the place name and tolerate half-typed words and small typos; typing a place with its city or country comes in Phase 2 | C-HOME-01, C-HOME-07 |
 | Taxes are configured per country only; hotel service charges are included in the room price | C-BOOK-02, A-CONF-02 |
 | One partner (business) per hotel; many users can manage a partner | A-USER-02, A-PAY-02 |
 | Season and weekend prices plus single-date overrides | O-ROOM-03 |
@@ -31,6 +32,8 @@ The platform has a client site for travellers and an admin site shared by hotel 
 | System | Both | Scheduled jobs, emails, payment webhooks |
 
 **Priority legend:** MVP = first release · Phase 2 = soon after launch · Later = explicitly deferred (e.g. recommendations).
+
+**Status legend:** ✅ Implemented = the API meets every acceptance criterion (screens are not part of this repo) · 🟡 Partly implemented = what is left is listed under the story. Stories with no mark are not implemented yet.
 
 **Story format:** As a *[actor]*, I want *[goal]* so that *[benefit]*.
 
@@ -62,16 +65,19 @@ The platform has a client site for travellers and an admin site shared by hotel 
 
 ## 2. Client – Homepage and search
 
-1. **C-HOME-01 Search hotels (MVP) (updated)** — As a guest, I want to search by destination, hotel name or area, check-in and check-out dates, number of rooms and number of guests so that I only see hotels that can host my stay.
+1. **C-HOME-01 Search hotels (MVP) (updated) ✅ Implemented** — As a guest, I want to search by destination, hotel name or area, check-in and check-out dates, number of rooms and number of guests so that I only see hotels that can host my stay.
    - The location field autocompletes countries, cities, districts, wards and hotel names as I type; accents and case are ignored ("da nang" finds "Đà Nẵng").
+   - A place is suggested when its name is close to what I typed, so a half-typed word ("hai ch") or a small typo ("hai chua") still finds "Hải Châu". The closest name comes first, then the place with more hotels.
+   - Each place suggestion shows where it is, e.g. "Thạch Thang — Hải Châu, Đà Nẵng, Vietnam".
+   - Only the place's own name is matched; typing it together with its city or country comes later (C-HOME-07).
    - Only places that have at least one active hotel are suggested.
    - Check-in cannot be in the past; check-out must be after check-in; a maximum stay length applies (e.g. 30 nights).
    - Guests are split into adults and children; child ages are asked because they affect price and room capacity.
    - Rooms: 1 to N; guests must be at least equal to rooms.
    - Submitting opens the search results page with the criteria in the URL so the search can be shared or bookmarked.
-2. **C-HOME-02 Remember last search [Added] (MVP) (updated)** — As a guest, I want my last search to be pre-filled when I return so that I don't retype it.
+2. **C-HOME-02 Remember last search [Added] (MVP) (updated) ✅ Implemented** — As a guest, I want my last search to be pre-filled when I return so that I don't retype it.
    - Stored in the browser only; search history is not saved on the server.
-3. **C-HOME-03 Popular destinations (MVP) (updated)** — As a guest, I want to see a section of the most popular destinations with photos and a few hotels each so that I can get ideas quickly.
+3. **C-HOME-03 Popular destinations (MVP) (updated) ✅ Implemented** — As a guest, I want to see a section of the most popular destinations with photos and a few hotels each so that I can get ideas quickly.
    - Clicking a destination runs a search for it with default dates (e.g. tomorrow, 1 night) and 2 adults.
    - Destinations are created automatically from hotel addresses; the admin chooses which ones are featured, their order and image (A-CONT-01).
 4. **C-HOME-04 Personalised recommendations (Later) (updated)** — As a signed-in customer, I want hotel recommendations based on my bookings, wishlist and recently viewed hotels so that I find relevant stays faster.
@@ -82,6 +88,9 @@ The platform has a client site for travellers and an admin site shared by hotel 
    - Guests: kept in the browser and merged into the account after sign-in.
    - Customer can remove one hotel or clear the whole list.
 6. **C-HOME-06 Language selection [Added] (Phase 2)** — As a guest, I want to choose the site language (e.g. English, Vietnamese) so that I can read content comfortably.
+7. **C-HOME-07 Find a place by its area [Added] (Phase 2)** — As a guest, I want to type a place together with the bigger places around it (e.g. "hai chau da nang" or "da nang vietnam") so that I can pick the right one when several places share a name.
+   - A place also matches on the district, city, province and country it lies in, not only on its own name.
+   - Half-typed words and small typos are tolerated as in C-HOME-01.
 
 ## 3. Client – Search results, filters, currency and map
 
@@ -310,9 +319,10 @@ The original requirements name the admin only as the approver of owner changes; 
 
 **Content and configuration**
 
-10. **A-CONT-01 Featured destinations [Added] (MVP) (updated)** — As an admin, I want to choose which destinations and hotels appear on the homepage so that I can promote them.
+10. **A-CONT-01 Featured destinations [Added] (MVP) (updated) 🟡 Partly implemented** — As an admin, I want to choose which destinations and hotels appear on the homepage so that I can promote them.
     - Destinations (country, city, district, ward) are synced automatically from hotel addresses; places with no active hotel are hidden but kept.
     - The admin can rename a destination, add an image, a city-centre point and a featured order; the sync never overwrites these.
+    - Left to do: choosing featured hotels, and setting a destination's city-centre point (the `center_lat`/`center_lng` columns exist, but no admin endpoint sets them).
 11. **A-CONT-02 Master data [Added] (MVP) (updated)** — As an admin, I want to manage the lists of facilities, services, room features, bed types, board types and accommodation types so that filters stay consistent.
     - Destinations are not entered by hand; they come from the sync (A-CONT-01).
 12. **A-DISC-01 Discount codes [Added] (MVP)** — As an admin, I want to create discount codes (percentage or fixed, validity dates, min spend, usage limits, eligible hotels, who pays the discount) so that I can run campaigns.

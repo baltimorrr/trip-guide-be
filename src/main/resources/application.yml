@@ -46,3 +46,14 @@ app:
       password: ${APP_BOOTSTRAP_ADMIN_PASSWORD:}
   cors:
     allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:}
+  search:
+    max-nights: 30
+    max-days-ahead: 365
+    max-rooms: 8
+    max-adults: 30
+    max-children: 10
+  destinations:
+    sync:
+      # Rebuilds destinations from listed hotels' addresses. Spring cron (six fields); "-" disables it.
+      cron: ${APP_DESTINATIONS_SYNC_CRON:0 */10 * * * *}
+      on-startup: ${APP_DESTINATIONS_SYNC_ON_STARTUP:true}

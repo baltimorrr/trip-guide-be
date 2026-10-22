@@ -13,3 +13,8 @@ app:
       password: admin-test-password-123
   cors:
     allowed-origins: ""
+  destinations:
+    sync:
+      # Tests call DestinationSyncService.sync() themselves; a background run would race with them.
+      cron: "-"
+      on-startup: false
