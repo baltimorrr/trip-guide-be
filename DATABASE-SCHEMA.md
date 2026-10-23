@@ -1,5 +1,7 @@
 // Hotel Booking Platform — database schema for dbdiagram.io
 // Generated from schema.sql (PostgreSQL 16). Paste into https://dbdiagram.io
+// Edited by hand to match the code: destinations (stored spellings), users.first_failed_login_at,
+// user_sessions.previous_token_hash and last_used_at.
 // Conventions: money = bigint *_minor (cents) + char(3) currency; a night = stay_date in [check_in, check_out)
 
 Project hotel_booking {
@@ -186,6 +188,7 @@ preferred_language text [not null, default: 'en']
 email_verified_at timestamptz
 status user_status [not null, default: 'active']
 failed_login_count smallint [not null, default: 0]
+first_failed_login_at timestamptz [note: 'start of the current lockout window']
 locked_until timestamptz
 deleted_at timestamptz
 created_at timestamptz [not null, default: `now()`]
@@ -229,14 +232,17 @@ Table user_sessions {
 id uuid [pk, default: `gen_random_uuid()`]
 user_id uuid [not null]
 refresh_token_hash text [not null, unique]
+previous_token_hash text [note: 'hash replaced by the last rotation; presenting it again revokes the session']
 user_agent text
-ip inet
-expires_at timestamptz [not null]
+ip inet [note: 'varchar(45) in the code']
+expires_at timestamptz [not null, note: 'fixed at sign-in; rotation does not extend it']
+last_used_at timestamptz
 revoked_at timestamptz
 created_at timestamptz [not null, default: `now()`]
 
 indexes {
 user_id [name: 'user_sessions_user_id_idx']
+previous_token_hash [name: 'user_sessions_previous_token_hash_idx']
 }
 }
 

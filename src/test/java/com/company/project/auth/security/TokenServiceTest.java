@@ -8,13 +8,16 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.crypto.SecretKey;
 
-import com.company.project.auth.dto.TokenResponse;
 import com.company.project.user.model.Role;
 import com.company.project.user.model.User;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -37,29 +40,46 @@ class TokenServiceTest {
 
 	final SecretKey key = config.jwtSigningKey(properties);
 
-	final JwtDecoder decoder = config.jwtDecoder(key, properties);
+	final AtomicInteger sessionChecks = new AtomicInteger();
+
+	/** Stands in for the database session check. */
+	final OAuth2TokenValidator<Jwt> liveSession = jwt -> {
+		sessionChecks.incrementAndGet();
+		return OAuth2TokenValidatorResult.success();
+	};
+
+	final JwtDecoder decoder = config.jwtDecoder(key, properties, liveSession);
 
 	final TokenService tokenService = new TokenService(config.jwtEncoder(key), properties);
 
 	@Test
 	void issuedTokenCarriesUserClaims() {
-		TokenResponse token = tokenService.issue(user(42L));
+		String token = tokenService.issue(user(42L), 7L);
 
-		Jwt jwt = decoder.decode(token.accessToken());
+		Jwt jwt = decoder.decode(token);
 		assertThat(jwt.getSubject()).isEqualTo("42");
+		assertThat(jwt.getClaimAsString(TokenService.SESSION_CLAIM)).isEqualTo("7");
 		assertThat(jwt.getClaimAsString("iss")).isEqualTo("spring-base");
 		assertThat(jwt.getClaimAsString(TokenService.EMAIL_CLAIM)).isEqualTo("jane@example.com");
 		assertThat(jwt.getClaimAsStringList(TokenService.ROLES_CLAIM)).containsExactly("ADMIN", "USER");
 		assertThat(Duration.between(jwt.getIssuedAt(), jwt.getExpiresAt())).isEqualTo(TTL);
-		assertThat(token.expiresIn()).isEqualTo(TTL.toSeconds());
-		assertThat(token.tokenType()).isEqualTo("Bearer");
+		assertThat(sessionChecks).hasValue(1);
+	}
+
+	@Test
+	void tokenOfAnInactiveSessionIsRejected() {
+		JwtDecoder revoked = config.jwtDecoder(key, properties,
+				jwt -> OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token")));
+
+		assertThatThrownBy(() -> revoked.decode(tokenService.issue(user(42L), 7L)))
+				.isInstanceOf(JwtValidationException.class);
 	}
 
 	@Test
 	void tokenSignedWithAnotherKeyIsRejected() {
 		JwtProperties otherProperties = properties("a-completely-different-32-byte-secret!!");
 		JwtEncoder otherEncoder = config.jwtEncoder(config.jwtSigningKey(otherProperties));
-		String token = new TokenService(otherEncoder, otherProperties).issue(user(1L)).accessToken();
+		String token = new TokenService(otherEncoder, otherProperties).issue(user(1L), 1L);
 
 		assertThatThrownBy(() -> decoder.decode(token)).isInstanceOf(JwtException.class);
 	}
@@ -73,6 +93,8 @@ class TokenServiceTest {
 				.build());
 
 		assertThatThrownBy(() -> decoder.decode(token)).isInstanceOf(JwtValidationException.class);
+		// Rejected before the session check, so a stale token never costs a database lookup.
+		assertThat(sessionChecks).hasValue(0);
 	}
 
 	@Test
@@ -113,7 +135,7 @@ class TokenServiceTest {
 	}
 
 	private static User user(long id) {
-		User user = User.create("jane@example.com", "{noop}irrelevant", "Jane", Set.of(Role.USER, Role.ADMIN));
+		User user = User.create("jane@example.com", "{noop}irrelevant", "Jane", null, Set.of(Role.USER, Role.ADMIN), null);
 		// The id is normally assigned by the database.
 		ReflectionTestUtils.setField(user, "id", id);
 		return user;

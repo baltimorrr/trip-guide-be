@@ -7,7 +7,9 @@ import javax.crypto.spec.SecretKeySpec;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
@@ -47,11 +49,18 @@ public class JwtConfig {
 		return NimbusJwtEncoder.withSecretKey(jwtSigningKey).algorithm(MacAlgorithm.HS256).build();
 	}
 
+	/** @param sessionTokenValidator checks the token's session is still live ({@link SessionTokenValidator}) */
 	@Bean
-	JwtDecoder jwtDecoder(SecretKey jwtSigningKey, JwtProperties properties) {
+	JwtDecoder jwtDecoder(SecretKey jwtSigningKey, JwtProperties properties, OAuth2TokenValidator<Jwt> sessionTokenValidator) {
 		NimbusJwtDecoder decoder = NimbusJwtDecoder.withSecretKey(jwtSigningKey).macAlgorithm(MacAlgorithm.HS256).build();
 		// Default validators check exp/nbf (60s clock skew); also require our issuer.
-		decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(properties.issuer()));
+		OAuth2TokenValidator<Jwt> standard = JwtValidators.createDefaultWithIssuer(properties.issuer());
+		// Chained by hand: DelegatingOAuth2TokenValidator runs every validator, and an expired or foreign token
+		// should not cost a database lookup.
+		decoder.setJwtValidator(jwt -> {
+			var result = standard.validate(jwt);
+			return result.hasErrors() ? result : sessionTokenValidator.validate(jwt);
+		});
 		return decoder;
 	}
 

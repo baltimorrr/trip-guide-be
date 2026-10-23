@@ -1,5 +1,7 @@
 package com.company.project.auth.security;
 
+import java.time.Instant;
+
 import com.company.project.user.model.Role;
 import com.company.project.user.model.User;
 import com.company.project.user.repository.UserRepository;
@@ -27,6 +29,8 @@ public class AppUserDetailsService implements UserDetailsService {
 				.password(user.getPasswordHash())
 				.roles(user.getRoles().stream().map(Role::name).toArray(String[]::new))
 				.disabled(!user.isEnabled())
+				// A locked account fails before its password is checked, with the same message as a wrong one.
+				.accountLocked(user.isLocked(Instant.now()))
 				.build();
 	}
 

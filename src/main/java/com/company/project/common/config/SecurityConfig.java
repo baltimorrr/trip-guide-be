@@ -1,6 +1,7 @@
 package com.company.project.common.config;
 
 import java.util.List;
+import java.util.stream.Stream;
 
 import com.company.project.common.exception.ProblemDetailSecurityHandler;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,7 +20,11 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.factory.PasswordEncoderFactories;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -32,9 +37,17 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 @EnableMethodSecurity
 public class SecurityConfig {
 
+	/** Account endpoints anyone may call (all POST). They also ignore any Authorization header, see below. */
+	private static final RequestMatcher PUBLIC_AUTH_ENDPOINTS = new OrRequestMatcher(Stream.of("/api/auth/register",
+			"/api/auth/login", "/api/auth/refresh", "/api/auth/logout", "/api/auth/verify-email",
+			"/api/auth/verify-email/resend", "/api/auth/password/forgot", "/api/auth/password/reset")
+		.map(path -> (RequestMatcher) PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, path))
+		.toList());
+
 	@Bean
 	SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter jwtAuthenticationConverter,
 			ProblemDetailSecurityHandler problemHandler) throws Exception {
+		DefaultBearerTokenResolver bearerTokens = new DefaultBearerTokenResolver();
 		http
 				// No cookies or sessions: the token travels in a header, so CSRF cannot apply.
 				// Re-enable CSRF if cookie-based auth is ever added.
@@ -44,7 +57,7 @@ public class SecurityConfig {
 				.httpBasic(AbstractHttpConfigurer::disable)
 				.formLogin(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(auth -> auth
-						.requestMatchers(HttpMethod.POST, "/api/auth/register", "/api/auth/login").permitAll()
+						.requestMatchers(PUBLIC_AUTH_ENDPOINTS).permitAll()
 						// Homepage: guests search without an account.
 						.requestMatchers(HttpMethod.GET, "/api/search/**", "/api/destinations/**").permitAll()
 						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
@@ -54,6 +67,9 @@ public class SecurityConfig {
 						.anyRequest().authenticated())
 				// Validates bearer tokens. This entry point handles invalid/expired tokens...
 				.oauth2ResourceServer(oauth2 -> oauth2
+						// A client whose access token expired must still be able to refresh, sign in or sign out,
+						// so the public account endpoints never read the header.
+						.bearerTokenResolver(request -> PUBLIC_AUTH_ENDPOINTS.matches(request) ? null : bearerTokens.resolve(request))
 						.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter))
 						.authenticationEntryPoint(problemHandler))
 				// ...and this one handles requests with no token at all, plus 403s.

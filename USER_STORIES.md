@@ -39,12 +39,13 @@ The platform has a client site for travellers and an admin site shared by hotel 
 
 ## 1. Client – Account and authentication
 
-1. **C-AUTH-01 Sign up with email (MVP)** — As a guest, I want to create an account with my email and password so that I can book and track my stays.
+1. **C-AUTH-01 Sign up with email (MVP) 🟡 Partly implemented** — As a guest, I want to create an account with my email and password so that I can book and track my stays.
    - Required fields: full name, email, password, confirm password; phone optional.
    - Email must be unique; password has a minimum strength rule (e.g. 8+ characters, letter and number).
    - A verification email is sent; the account is active after the link is clicked.
    - Clear error messages for duplicate email or weak password.
-2. **C-AUTH-02 Sign in with email (MVP) (updated)** — As a customer, I want to sign in with email and password so that I can access my bookings.
+   - Left: send the email. The verification link is only written to the server log until an email service is chosen.
+2. **C-AUTH-02 Sign in with email (MVP) (updated) ✅ Implemented** — As a customer, I want to sign in with email and password so that I can access my bookings.
    - Wrong credentials show a generic error (no hint whether the email exists).
    - Account is temporarily locked after repeated failed attempts (e.g. 5 in 15 minutes).
    - Sign-in returns a short-lived access token (about 15 minutes) and a refresh token; the refresh token is stored hashed, one session per device.
@@ -52,13 +53,15 @@ The platform has a client site for travellers and an admin site shared by hotel 
 3. **C-AUTH-03 Sign in with Google (MVP)** — As a guest, I want to sign in with my Google account so that I don't need a new password.
    - First Google sign-in creates an account using the Google name and email.
    - If an email account already exists with the same address, the accounts are linked rather than duplicated.
-4. **C-AUTH-04 Forgot / reset password [Added] (MVP)** — As a customer, I want to reset my password by email so that I can recover my account.
+4. **C-AUTH-04 Forgot / reset password [Added] (MVP) 🟡 Partly implemented** — As a customer, I want to reset my password by email so that I can recover my account.
    - Reset link expires (e.g. after 30 minutes) and can be used once.
-5. **C-AUTH-05 Sign out [Added] (MVP) (updated)** — As a customer, I want to sign out so that my account is safe on shared devices.
+   - Left: send the email. The reset link is only written to the server log until an email service is chosen.
+5. **C-AUTH-05 Sign out [Added] (MVP) (updated) ✅ Implemented** — As a customer, I want to sign out so that my account is safe on shared devices.
    - Sign out revokes the session of this device; "Sign out of all devices" revokes every session.
-6. **C-AUTH-06 Manage profile [Added] (MVP)** — As a customer, I want to edit my name, phone, nationality and preferred currency so that checkout is pre-filled.
+6. **C-AUTH-06 Manage profile [Added] (MVP) 🟡 Partly implemented** — As a customer, I want to edit my name, phone, nationality and preferred currency so that checkout is pre-filled.
    - Saved details pre-fill the guest information form at checkout (C-BOOK-05).
    - Customer can change password (email accounts only).
+   - Left: the checkout pre-fill itself, which comes with C-BOOK-05. The profile API stores and returns the details.
 7. **C-AUTH-07 Delete account [Added] (Phase 2)** — As a customer, I want to request deletion of my account and personal data so that my privacy is respected.
    - Booking records needed for accounting are kept but anonymised; wishlist and recently viewed hotels are deleted.
 8. **C-AUTH-08 Book as guest decision [Added]** — Decide whether a guest can book without an account. These stories assume sign-in is required before checkout; search, hotel detail and cart are open to guests.
@@ -375,6 +378,7 @@ The original requirements name the admin only as the approver of owner changes; 
 - [x] Daily prices and inventory go live without admin approval; hotel content and new room types need approval.
 - [x] One partner per hotel; many users per partner.
 - [x] Destinations are synced from hotel addresses; search history is not stored.
+- [x] Sessions: the refresh token rotates on every use and reusing an old one revokes the session; the last used time is stored, no device name. Every request checks the access token's session, so sign-out takes effect at once.
 
 **Open questions to decide**
 
@@ -387,4 +391,3 @@ The original requirements name the admin only as the approver of owner changes; 
 - [ ] Are sold-out hotels hidden from search or shown as "Sold out"?
 - [ ] Is "user rating" from our own reviews only at launch, and what is shown before a hotel has any reviews?
 - [ ] Does the platform collect full payment upfront (merchant model) or does the guest pay at the hotel for some rates?
-- [ ] Do sessions need extra security columns (last used time, refresh-token reuse detection, device name)?

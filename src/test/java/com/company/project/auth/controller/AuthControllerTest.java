@@ -1,25 +1,26 @@
 package com.company.project.auth.controller;
 
 import static com.company.project.support.TestAuth.USER_PASSWORD;
-import static com.company.project.support.TestAuth.accessToken;
 import static com.company.project.support.TestAuth.adminToken;
-import static com.company.project.support.TestAuth.bearer;
 import static com.company.project.support.TestAuth.body;
 import static com.company.project.support.TestAuth.login;
 import static com.company.project.support.TestAuth.register;
+import static com.company.project.support.TestAuth.registerVerified;
 import static com.company.project.support.TestAuth.uniqueEmail;
-import static com.company.project.support.TestAuth.userToken;
+import static com.company.project.support.TestAuth.verifyEmail;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Locale;
 
+import com.company.project.auth.security.OpaqueTokens;
 import com.company.project.support.IntegrationTest;
+import com.company.project.support.RecordingAuthMailer;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
@@ -33,6 +34,9 @@ class AuthControllerTest {
 
 	@Autowired
 	JwtDecoder jwtDecoder;
+
+	@Autowired
+	JdbcClient jdbc;
 
 	@Test
 	void registerCreatesUserWithoutExposingPassword() {
@@ -69,15 +73,15 @@ class AuthControllerTest {
 		assertThat(result).hasStatus(HttpStatus.BAD_REQUEST);
 		assertThat(result.getResponse().getContentType()).isEqualTo("application/problem+json");
 		assertThat(result).bodyJson().extractingPath("$.errors[*].field").asArray()
-				.contains("email", "password", "fullName");
+				.contains("email", "password", "confirmPassword", "fullName");
 		// The submitted password must never be echoed back.
 		assertThat(body(result)).doesNotContain("short");
 	}
 
 	@Test
 	void passwordOverBcryptByteLimitIsRejected() {
-		// 37 characters passes @Size(max = 72), but in UTF-8 it is 74 bytes.
-		String password = "é".repeat(37);
+		// 37 characters with a letter and a digit pass the password rule, but in UTF-8 it is 73 bytes.
+		String password = "é".repeat(36) + "1";
 
 		assertThat(register(mvc, uniqueEmail(), password)).hasStatus(HttpStatus.BAD_REQUEST);
 		assertThat(login(mvc, uniqueEmail(), password)).hasStatus(HttpStatus.UNAUTHORIZED);
@@ -86,7 +90,7 @@ class AuthControllerTest {
 	@Test
 	void loginReturnsVerifiableToken() {
 		String email = uniqueEmail();
-		register(mvc, email, USER_PASSWORD);
+		registerVerified(mvc, email, USER_PASSWORD);
 
 		MvcTestResult result = login(mvc, email, USER_PASSWORD);
 
@@ -111,56 +115,129 @@ class AuthControllerTest {
 	}
 
 	@Test
-	void meWithoutTokenReturnsBearerChallenge() {
-		MvcTestResult result = mvc.get().uri("/api/auth/me").exchange();
-
-		assertThat(result).hasStatus(HttpStatus.UNAUTHORIZED);
-		assertThat(result.getResponse().getHeader(HttpHeaders.WWW_AUTHENTICATE)).isEqualTo("Bearer");
-		assertThat(result.getResponse().getContentType()).isEqualTo("application/problem+json");
-		assertThat(result).bodyJson().extractingPath("$.detail").isEqualTo("Authentication required");
-	}
-
-	@Test
-	void meWithMalformedTokenReturnsProblemDetail() {
-		MvcTestResult result = mvc.get().uri("/api/auth/me")
-				.header(HttpHeaders.AUTHORIZATION, bearer("not-a-jwt")).exchange();
-
-		assertThat(result).hasStatus(HttpStatus.UNAUTHORIZED);
-		assertThat(result).bodyJson().extractingPath("$.detail").isEqualTo("Invalid or expired access token");
-	}
-
-	@Test
-	void meWithTamperedSignatureIsRejected() {
-		String token = userToken(mvc);
-		// Change a character inside the signature (not the last one, whose low bits are padding).
-		int index = token.lastIndexOf('.') + 5;
-		char replacement = token.charAt(index) == 'A' ? 'B' : 'A';
-		String tampered = token.substring(0, index) + replacement + token.substring(index + 1);
-
-		MvcTestResult result = mvc.get().uri("/api/auth/me")
-				.header(HttpHeaders.AUTHORIZATION, bearer(tampered)).exchange();
-
-		assertThat(result).hasStatus(HttpStatus.UNAUTHORIZED);
-	}
-
-	@Test
-	void meReturnsCurrentUser() {
-		String email = uniqueEmail();
-		register(mvc, email, USER_PASSWORD);
-		String token = accessToken(mvc, email, USER_PASSWORD);
-
-		assertThat(mvc.get().uri("/api/auth/me").header(HttpHeaders.AUTHORIZATION, bearer(token)))
-				.hasStatusOk()
-				.bodyJson()
-				.extractingPath("$.email")
-				.isEqualTo(email);
-	}
-
-	@Test
 	void bootstrapAdminLogsInWithAdminRole() {
 		Jwt jwt = jwtDecoder.decode(adminToken(mvc));
 
 		assertThat(jwt.getClaimAsStringList("roles")).containsExactly("ADMIN", "USER");
+	}
+
+	@Test
+	void weakPasswordsAreRejected() {
+		for (String weak : new String[] { "abcdefgh", "12345678", "short1" }) {
+			MvcTestResult result = register(mvc, uniqueEmail(), weak);
+
+			assertThat(result).hasStatus(HttpStatus.BAD_REQUEST);
+			assertThat(result).bodyJson().extractingPath("$.errors[*].field").asArray().containsOnly("password");
+		}
+	}
+
+	@Test
+	void passwordConfirmationMustMatch() {
+		String json = """
+				{"email": "%s", "password": "%s", "confirmPassword": "other-password-1", "fullName": "Jane"}"""
+			.formatted(uniqueEmail(), USER_PASSWORD);
+
+		MvcTestResult result = mvc.post().uri("/api/auth/register")
+				.contentType(MediaType.APPLICATION_JSON).content(json).exchange();
+
+		assertThat(result).hasStatus(HttpStatus.BAD_REQUEST);
+		assertThat(result).bodyJson().extractingPath("$.errors[*].field").asArray().containsOnly("passwordConfirmed");
+	}
+
+	@Test
+	void registrationStartsUnverifiedAndSendsVerificationLink() {
+		String email = uniqueEmail();
+		String json = """
+				{"email": "%s", "password": "%s", "confirmPassword": "%s", "fullName": " Jane Doe ",
+				 "phone": " +84 90 123 4567 "}""".formatted(email, USER_PASSWORD, USER_PASSWORD);
+
+		MvcTestResult result = mvc.post().uri("/api/auth/register")
+				.contentType(MediaType.APPLICATION_JSON).content(json).exchange();
+
+		assertThat(result).hasStatus(HttpStatus.CREATED);
+		assertThat(result).bodyJson().extractingPath("$.emailVerified").isEqualTo(false);
+		assertThat(result).bodyJson().extractingPath("$.fullName").isEqualTo("Jane Doe");
+		assertThat(result).bodyJson().extractingPath("$.phone").isEqualTo("+84 90 123 4567");
+		assertThat(RecordingAuthMailer.verificationLink(email)).startsWith("http://localhost:5173/verify-email?token=");
+	}
+
+	@Test
+	void unverifiedAccountSignsInOnlyAfterUsingTheLink() {
+		String email = uniqueEmail();
+		register(mvc, email, USER_PASSWORD);
+
+		MvcTestResult beforeVerifying = login(mvc, email, USER_PASSWORD);
+		assertThat(beforeVerifying).hasStatus(HttpStatus.FORBIDDEN);
+		assertThat(beforeVerifying).bodyJson().extractingPath("$.detail").isEqualTo("Email not verified");
+		// A wrong password still gets the generic answer, so the 403 reveals nothing without the password.
+		assertThat(login(mvc, email, "wrong-password-1")).bodyJson().extractingPath("$.detail")
+				.isEqualTo("Invalid email or password");
+
+		assertThat(verifyEmail(mvc, RecordingAuthMailer.verificationToken(email))).hasStatus(HttpStatus.NO_CONTENT);
+
+		assertThat(login(mvc, email, USER_PASSWORD)).hasStatusOk();
+	}
+
+	@Test
+	void verificationLinkWorksOnce() {
+		String email = uniqueEmail();
+		register(mvc, email, USER_PASSWORD);
+		String token = RecordingAuthMailer.verificationToken(email);
+		assertThat(verifyEmail(mvc, token)).hasStatus(HttpStatus.NO_CONTENT);
+
+		MvcTestResult again = verifyEmail(mvc, token);
+
+		assertThat(again).hasStatus(HttpStatus.BAD_REQUEST);
+		assertThat(again).bodyJson().extractingPath("$.detail").isEqualTo("Invalid or expired link");
+	}
+
+	@Test
+	void expiredOrUnknownVerificationLinkIsRejected() {
+		String email = uniqueEmail();
+		register(mvc, email, USER_PASSWORD);
+		String token = RecordingAuthMailer.verificationToken(email);
+		jdbc.sql("update user_tokens set expires_at = now() - interval '1 minute' where token_hash = :hash")
+			.param("hash", OpaqueTokens.hash(token))
+			.update();
+
+		assertThat(verifyEmail(mvc, token)).hasStatus(HttpStatus.BAD_REQUEST);
+		assertThat(verifyEmail(mvc, OpaqueTokens.generate())).hasStatus(HttpStatus.BAD_REQUEST);
+		assertThat(login(mvc, email, USER_PASSWORD)).hasStatus(HttpStatus.FORBIDDEN);
+	}
+
+	@Test
+	void resendReplacesThePreviousLink() {
+		String email = uniqueEmail();
+		register(mvc, email, USER_PASSWORD);
+		String first = RecordingAuthMailer.verificationToken(email);
+
+		assertThat(resend(email.toUpperCase(Locale.ROOT))).hasStatus(HttpStatus.ACCEPTED);
+		String second = RecordingAuthMailer.verificationToken(email);
+
+		assertThat(second).isNotEqualTo(first);
+		assertThat(verifyEmail(mvc, first)).hasStatus(HttpStatus.BAD_REQUEST);
+		assertThat(verifyEmail(mvc, second)).hasStatus(HttpStatus.NO_CONTENT);
+	}
+
+	@Test
+	void resendAnswersTheSameForUnknownAndVerifiedEmails() {
+		String unknown = uniqueEmail();
+		String verified = uniqueEmail();
+		registerVerified(mvc, verified, USER_PASSWORD);
+		String usedLink = RecordingAuthMailer.verificationLink(verified);
+
+		assertThat(resend(unknown)).hasStatus(HttpStatus.ACCEPTED);
+		assertThat(resend(verified)).hasStatus(HttpStatus.ACCEPTED);
+
+		assertThat(RecordingAuthMailer.verificationLink(unknown)).isNull();
+		assertThat(RecordingAuthMailer.verificationLink(verified)).isEqualTo(usedLink);
+	}
+
+	private MvcTestResult resend(String email) {
+		return mvc.post().uri("/api/auth/verify-email/resend").contentType(MediaType.APPLICATION_JSON)
+			.content("""
+					{"email": "%s"}""".formatted(email))
+			.exchange();
 	}
 
 }

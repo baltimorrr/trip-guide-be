@@ -11,6 +11,9 @@ app:
     admin:
       email: admin@test.local
       password: admin-test-password-123
+  auth:
+    # Tests ask for several links in a row for one account.
+    email-cooldown: 0s
   cors:
     allowed-origins: ""
   destinations:

@@ -9,7 +9,8 @@ import org.springframework.stereotype.Component;
 public class UserMapper {
 
 	public UserResponse toResponse(User user) {
-		return new UserResponse(user.getId(), user.getEmail(), user.getFullName(),
+		return new UserResponse(user.getId(), user.getEmail(), user.getFullName(), user.getPhone(),
+				user.getCountryCode(), user.getPreferredCurrency(), user.isEmailVerified(),
 				user.getRoles().stream().sorted().toList(), user.getCreatedAt());
 	}
 

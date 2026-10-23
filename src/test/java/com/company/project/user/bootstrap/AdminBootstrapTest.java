@@ -4,9 +4,14 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.EnumSet;
+
 import com.company.project.common.exception.BusinessException;
+import com.company.project.user.model.Role;
 import com.company.project.user.repository.UserRepository;
 import com.company.project.user.services.UserService;
 import org.junit.jupiter.api.Test;
@@ -28,7 +33,7 @@ class AdminBootstrapTest {
 
 	@Test
 	void adminCreatedConcurrentlyIsSkipped() {
-		when(userService.create(anyString(), anyString(), anyString(), any()))
+		when(userService.create(anyString(), anyString(), anyString(), any(), any(), eq(true)))
 				.thenThrow(new BusinessException(HttpStatus.CONFLICT, "Email already registered"));
 
 		assertThatCode(this::runBootstrap).doesNotThrowAnyException();
@@ -36,10 +41,18 @@ class AdminBootstrapTest {
 
 	@Test
 	void otherBusinessErrorsStillFailStartup() {
-		when(userService.create(anyString(), anyString(), anyString(), any()))
+		when(userService.create(anyString(), anyString(), anyString(), any(), any(), eq(true)))
 				.thenThrow(new BusinessException(HttpStatus.BAD_REQUEST, "Password must be at most 72 bytes"));
 
 		assertThatThrownBy(this::runBootstrap).isInstanceOf(BusinessException.class).hasMessageContaining("72 bytes");
+	}
+
+	@Test
+	void adminIsCreatedWithVerifiedEmail() {
+		runBootstrap();
+
+		verify(userService).create("admin@example.com", "admin-password-123", "Administrator", null,
+				EnumSet.of(Role.ADMIN, Role.USER), true);
 	}
 
 	private void runBootstrap() {

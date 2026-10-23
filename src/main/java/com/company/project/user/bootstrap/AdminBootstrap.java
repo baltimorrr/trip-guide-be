@@ -49,7 +49,8 @@ class AdminBootstrap implements ApplicationRunner {
 					.formatted(MIN_ADMIN_PASSWORD_LENGTH));
 		}
 		try {
-			userService.create(email, properties.password(), "Administrator", EnumSet.of(Role.ADMIN, Role.USER));
+			// Verified up front: nobody can click a link for a configured account.
+			userService.create(email, properties.password(), "Administrator", null, EnumSet.of(Role.ADMIN, Role.USER), true);
 			log.info("Admin bootstrap created {}", email);
 		}
 		catch (BusinessException | DataIntegrityViolationException ex) {

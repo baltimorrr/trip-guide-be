@@ -11,7 +11,10 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 
-/** Register/login helpers for API tests. Each test uses fresh emails so tests never share users. */
+/**
+ * Register/verify/login helpers for API tests. Each test uses fresh emails so tests never share users. Emailed
+ * links are read from {@link RecordingAuthMailer}.
+ */
 public final class TestAuth {
 
 	/** Must match app.bootstrap.admin in src/test/resources/application-test.yml. */
@@ -28,10 +31,25 @@ public final class TestAuth {
 		return "user-" + UUID.randomUUID() + "@test.local";
 	}
 
+	/** Registers an account that still has to verify its email. */
 	public static MvcTestResult register(MockMvcTester mvc, String email, String password) {
 		String json = """
-				{"email": "%s", "password": "%s", "fullName": "Test User"}""".formatted(email, password);
+				{"email": "%s", "password": "%s", "confirmPassword": "%s", "fullName": "Test User"}"""
+			.formatted(email, password, password);
 		return mvc.post().uri("/api/auth/register").contentType(MediaType.APPLICATION_JSON).content(json).exchange();
+	}
+
+	/** Uses the link from the verification email, as the user would. */
+	public static MvcTestResult verifyEmail(MockMvcTester mvc, String token) {
+		String json = """
+				{"token": "%s"}""".formatted(token);
+		return mvc.post().uri("/api/auth/verify-email").contentType(MediaType.APPLICATION_JSON).content(json).exchange();
+	}
+
+	/** Registers an account and verifies its email, so it can sign in. */
+	public static void registerVerified(MockMvcTester mvc, String email, String password) {
+		assertThat(register(mvc, email, password)).hasStatus(HttpStatus.CREATED);
+		assertThat(verifyEmail(mvc, RecordingAuthMailer.verificationToken(email))).hasStatus(HttpStatus.NO_CONTENT);
 	}
 
 	public static MvcTestResult login(MockMvcTester mvc, String email, String password) {
@@ -46,10 +64,10 @@ public final class TestAuth {
 		return JsonPath.read(body(result), "$.accessToken");
 	}
 
-	/** Registers a new USER and returns its access token. */
+	/** Registers and verifies a new USER and returns its access token. */
 	public static String userToken(MockMvcTester mvc) {
 		String email = uniqueEmail();
-		assertThat(register(mvc, email, USER_PASSWORD)).hasStatus(HttpStatus.CREATED);
+		registerVerified(mvc, email, USER_PASSWORD);
 		return accessToken(mvc, email, USER_PASSWORD);
 	}
 

@@ -39,7 +39,23 @@ app:
     # startup with a report naming this property. Generate: openssl rand -base64 32
     secret: ${APP_JWT_SECRET:}
     issuer: spring-base
-    access-token-ttl: 1h
+    # Short on purpose: the refresh token (app.auth) keeps the user signed in.
+    access-token-ttl: 15m
+  auth:
+    # Emailed links open pages of this web app, which post the token to the API.
+    frontend-url: ${APP_FRONTEND_URL:http://localhost:5173}
+    # How long a sign-in (refresh-token session) lasts, without and with "remember me". Refreshing never extends it.
+    refresh-token-ttl: 1d
+    remember-me-ttl: 30d
+    email-verification-ttl: 24h
+    password-reset-ttl: 30m
+    # Minimum time between two verification or reset emails to one account.
+    email-cooldown: 1m
+    lockout:
+      # This many failed sign-ins within the window (counted from the first failure) lock the account.
+      max-attempts: 5
+      window: 15m
+      duration: 15m
   bootstrap:
     admin:
       email: ${APP_BOOTSTRAP_ADMIN_EMAIL:}

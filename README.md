@@ -6,7 +6,9 @@ One sample feature (`product`) shows the conventions end to end.
 
 It also holds the first features of the Hotel Booking Platform described in `USER_STORIES.md`: the homepage's
 location autocomplete, hotel availability search and popular destinations (C-HOME-01/02/03), plus the admin
-endpoints that curate those destinations. See [Search and destinations](#search-and-destinations).
+endpoints that curate those destinations. See [Search and destinations](#search-and-destinations). Customer accounts
+(C-AUTH-01/02/04/05/06) have email verification, sign-in sessions per device, lockout, password reset and a profile.
+See [Accounts and sessions](#accounts-and-sessions).
 
 ## Stack
 
@@ -54,17 +56,28 @@ The app refuses to start if `APP_JWT_SECRET` is missing or shorter than 32 bytes
 ```bash
 BASE=http://localhost:8080
 
-# register (role USER)
+# register (role USER); the account cannot sign in until its email is verified
 curl -s -H 'Content-Type: application/json' \
-  -d '{"email":"jane@example.com","password":"jane-password-1","fullName":"Jane Doe"}' \
+  -d '{"email":"jane@example.com","password":"jane-password-1","confirmPassword":"jane-password-1","fullName":"Jane Doe"}' \
   $BASE/api/auth/register
 
-# login → access token
-TOKEN=$(curl -s -H 'Content-Type: application/json' \
-  -d '{"email":"jane@example.com","password":"jane-password-1"}' \
-  $BASE/api/auth/login | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
+# no email is sent yet: the app log has the link, e.g.
+#   Email verification link for jane@example.com: http://localhost:5173/verify-email?token=AbC...
+curl -s -H 'Content-Type: application/json' -d '{"token":"AbC..."}' $BASE/api/auth/verify-email
+
+# login → access token (15 min) + refresh token
+LOGIN=$(curl -s -H 'Content-Type: application/json' \
+  -d '{"email":"jane@example.com","password":"jane-password-1","rememberMe":true}' $BASE/api/auth/login)
+TOKEN=$(echo "$LOGIN" | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
+REFRESH=$(echo "$LOGIN" | sed -E 's/.*"refreshToken":"([^"]+)".*/\1/')
 
 curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/auth/me
+
+# new pair when the access token expires; the old refresh token stops working
+curl -s -H 'Content-Type: application/json' -d "{\"refreshToken\":\"$REFRESH\"}" $BASE/api/auth/refresh
+
+# sign out this device (use the newest refresh token)
+curl -s -H 'Content-Type: application/json' -d '{"refreshToken":"<newest>"}' $BASE/api/auth/logout
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/products?page=0&size=20&sort=name,asc"
 
 # creating products needs ADMIN: log in as APP_BOOTSTRAP_ADMIN_EMAIL instead, then
@@ -76,9 +89,18 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 
 | Method | Path | Access | Notes |
 |--------|------|--------|-------|
-| POST | `/api/auth/register` | public | 201; email is stored lowercased; 409 if taken |
-| POST | `/api/auth/login` | public | 200 `{accessToken, tokenType, expiresIn}`; 401 on any failure |
-| GET | `/api/auth/me` | authenticated | current user |
+| POST | `/api/auth/register` | public | 201, unverified; `{email, password, confirmPassword, fullName, phone?}`; 409 if taken; logs the verification link |
+| POST | `/api/auth/verify-email` | public | `{token}` from the link → 204; 400 unknown, used or expired link |
+| POST | `/api/auth/verify-email/resend` | public | `{email}` → always 202; a new link only for an unverified account |
+| POST | `/api/auth/login` | public | `{email, password, rememberMe?}` → 200 `{accessToken, tokenType, expiresIn, refreshToken, refreshExpiresIn}`; 401 on any failure (also when locked); 403 email not verified |
+| POST | `/api/auth/refresh` | public | `{refreshToken}` → 200 new pair; 401 unknown, used, expired or revoked |
+| POST | `/api/auth/logout` | public | `{refreshToken}` → always 204; ends that device's session |
+| POST | `/api/auth/logout-all` | authenticated | 204; ends every session of the user |
+| POST | `/api/auth/password/forgot` | public | `{email}` → always 202; logs a reset link for an existing account |
+| POST | `/api/auth/password/reset` | public | `{token, newPassword}` → 204, every session ended; 400 unknown, used or expired link |
+| GET | `/api/auth/me` | authenticated | current user's profile |
+| PUT | `/api/auth/me` | authenticated | `{fullName, phone?, countryCode?, preferredCurrency?}` replaces the profile |
+| PUT | `/api/auth/me/password` | authenticated | `{currentPassword, newPassword}` → 204, other sessions ended; 400 wrong current password |
 | GET | `/api/products` | authenticated | paged: `{content: [...], page: {size, number, totalElements, totalPages}}`; max size 100 |
 | GET | `/api/products/{id}` | authenticated | 404 if missing |
 | POST | `/api/products` | ADMIN | 201 + `Location` |
@@ -100,6 +122,40 @@ Every error is `application/problem+json` (RFC 9457):
 {"title": "Bad Request", "status": 400, "detail": "Validation failed", "instance": "/api/products",
  "errors": [{"field": "price", "message": "must be greater than or equal to 0.00"}]}
 ```
+
+## Accounts and sessions
+
+**Sign-up.** Passwords need 8–72 characters with a letter and a digit (and at most 72 bytes). A new account starts
+unverified, and a verification link (24 h, works once) is sent. **No email service is wired yet: links are written
+to the app log** (`LoggingAuthMailer`). Links point to the web app (`APP_FRONTEND_URL`): `/verify-email?token=…`
+and `/reset-password?token=…`. That page posts the token to the API. Signing in before verifying gets 403 "Email not
+verified", but only with the right password. A wrong password always gets the generic 401. Existing accounts and the
+bootstrap admin count as verified.
+
+**Sessions.** Sign-in returns a 15-minute access token and a refresh token. Each sign-in is one session (one device),
+stored with its user agent and IP; only a SHA-256 hash of the refresh token is kept. A session lasts 1 day, or 30 days
+with `rememberMe`, counted from sign-in; refreshing never extends it.
+
+- `POST /api/auth/refresh` hands out a new pair, and the old refresh token stops working.
+- Presenting an already-used refresh token again ends the session: it was probably stolen. Clients must therefore
+  send **one refresh at a time** per device (two tabs refreshing at once sign that device out).
+- Every access token carries its session id (`sid`), and each request checks that the session is live and the user
+  enabled. Sign-out, sign-out everywhere, a password change and a password reset take effect at once, not when the
+  access token expires.
+- The public account endpoints ignore the `Authorization` header, so a client holding an expired access token can
+  still refresh, sign in or sign out.
+
+**Lockout.** 5 failed sign-ins within 15 minutes (counted from the first failure) lock the account for 15 minutes.
+A locked account gets the same 401 as a wrong password, and its password is not checked. A successful sign-in or a
+password reset clears the count.
+
+**Passwords.** `POST /api/auth/password/forgot` always answers 202. For an existing account it sends a reset link
+(30 min, works once; asking again kills the previous link). Resetting signs out every device, lifts a lockout, and
+marks the email verified. `PUT /api/auth/me/password` needs the current password and signs out every other device.
+At most one verification or reset email per account per minute (`app.auth.email-cooldown`).
+
+**Profile.** `PUT /api/auth/me` replaces name, phone, nationality (`countryCode`, ISO 3166 alpha-2) and
+`preferredCurrency` (ISO 4217). Fields left out are cleared, and codes are stored uppercase.
 
 ## Search and destinations
 
@@ -173,13 +229,21 @@ Nẵng, Hồ Chí Minh, Hà Nội and Hội An (one inactive hotel in Huế), an
 |------|------|--------|
 | `ProjectApplicationTest` | full app | context starts, health is UP |
 | `ErrorResponseTest` | full app | problem+json for unknown paths, API docs served |
-| `AuthControllerTest` | full app | register/login/me, validation, 72-byte password limit, bad/tampered tokens, admin bootstrap |
+| `AuthControllerTest` | full app | register (password rule, confirmation, 72-byte limit), verification link and resend, unverified sign-in, admin bootstrap |
+| `AuthControllerSessionTest` | full app | token pair, stored hash and device, remember me, refresh rotation, reuse revokes, sign-out one/all devices, disabled user, stale header ignored |
+| `AuthControllerLockoutTest` | full app | lock after 5 failures, same 401, lock expiry, window restart, success resets |
+| `AuthControllerPasswordTest` | full app | forgot (no enumeration), reset once/expired/replaced, signs out everywhere, unlocks, verifies |
+| `ProfileControllerTest` | full app | me, bad/tampered tokens, profile update and validation, change password keeps this device only |
+| `UserSessionRepositoryTest` | JPA slice | revoke all / all but one, lookup by current or previous hash, live-session check |
+| `SessionServiceImplTest`, `SessionTokenValidatorTest` | unit | rotation, reuse and ended sessions → 401; `sid` check |
+| `UserTokenServiceImplTest`, `PasswordServiceImplTest`, `ProfileServiceImplTest` | unit | link cooldown/replacement/use, reset and change rules, profile normalization |
+| `OpaqueTokensTest` | unit | random url-safe tokens, SHA-256 hashes |
 | `ProductControllerTest` | full app | CRUD, USER vs ADMIN (403), 404, validation, sort/page limits, write-response timestamps equal stored ones |
-| `UserRepositoryTest` | JPA slice | mapping, roles table, unique email, audit timestamps |
-| `TokenServiceTest` | unit | claims, wrong key, expired, wrong issuer, weak secret |
-| `UserServiceImplTest` | unit | 72-byte password limit, duplicate email (409), normalized email and hashed password |
+| `UserRepositoryTest` | JPA slice | mapping, roles table, unique email, audit timestamps, lockout counting |
+| `TokenServiceTest` | unit | claims incl. `sid`, wrong key, expired (no session lookup), wrong issuer, inactive session, weak secret |
+| `UserServiceImplTest` | unit | 72-byte password limit, duplicate email (409), normalized email and hashed password, verified flag, change password |
 | `ProductServiceImplTest` | unit | 404 for a missing id, create/update go through the mapper |
-| `AdminBootstrapTest` | unit | a concurrently created admin is skipped, any other error still fails startup |
+| `AdminBootstrapTest` | unit | a concurrently created admin is skipped, any other error still fails startup, admin is verified |
 | `DestinationRepositoryTest` | full app | `norm()`, generated normalized name and keys, place-key uniqueness and CHECKs |
 | `DestinationSyncServiceImplTest` | full app | places from listed hotels only, every level, slugs, counts, spellings chosen and refreshed, admin fields kept, country names |
 | `SearchControllerTest` | full app | accent-insensitive suggestions, half-typed words and typos in place names, escaped wildcards, availability (closed/sold-out nights, capacity, several rooms, children), validation |
@@ -191,6 +255,8 @@ Nẵng, Hồ Chí Minh, Hà Nội and Hội An (one inactive hotel in Huế), an
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
 Full-app tests use `@IntegrationTest` (`src/test/.../support`). Every class shares one Spring context and one
 container, so the suite stays fast. Tests create their own data with unique emails and never assume an empty database.
+`@IntegrationTest` swaps the logging mailer for `RecordingAuthMailer`, so tests follow emailed links like a user;
+`TestAuth.userToken` registers, verifies and signs in.
 Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, then call the destination sync
 themselves (the `test` profile never schedules it). Unit tests use Mockito and start no Spring context.
 
@@ -204,15 +270,17 @@ src/main/java/com/company/project/
 ├── common/                              shared by every feature; imports no feature package
 │   ├── config/                          SecurityConfig, OpenApiConfig (API docs), JpaAuditingConfig, SchedulingConfig
 │   ├── persistence/                     DatabaseFunctionContributor: norm() callable from JPQL
+│   ├── validation/                      @StrongPassword, @PhoneNumber, @IsoCountry, @IsoCurrency
 │   ├── dto/PageResponse.java            paged list body: {content, page}
 │   ├── exception/                       GlobalExceptionHandler, BusinessException, ResourceNotFoundException,
 │   │                                    ProblemDetailSecurityHandler (401/403 → problem+json)
 │   └── model/BaseEntity.java            id, version, createdAt, updatedAt
-├── auth/                                register / login / me
-│   ├── controller/  dto/  services/ (+ impl/)
-│   └── security/                        JWT encode/decode, token issuing, user lookup for login
-├── user/                                User entity, roles, account creation
-│   ├── model/  repository/  dto/  mapper/  services/ (+ impl/)
+├── auth/                                sign-up, verification, sign-in sessions, passwords, profile endpoints
+│   ├── controller/  config/  dto/  model/  repository/ (+ impl/)  services/ (+ impl/)
+│   ├── mail/                            AuthMailer; LoggingAuthMailer writes links to the log
+│   └── security/                        JWT encode/decode, session check per request, opaque tokens, user lookup
+├── user/                                User entity, roles, account creation, lockout counters, profile
+│   ├── model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
 │   └── bootstrap/                       first admin account on startup
 ├── product/                             sample feature: copy this shape
 │   └── controller/  model/  repository/  dto/  mapper/  services/ (+ impl/)
@@ -227,7 +295,7 @@ src/main/resources/
 ├── application.yml                      defaults for every profile
 ├── application-local.yml                local dev (the default profile): .env, Docker Compose, demo seed
 ├── application-prod.yml                 production overrides
-├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm()
+├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions
 └── db/seed/R__demo_catalog.sql          demo hotels, local profile only
 ```
 
@@ -297,12 +365,15 @@ Profiles: `local` is the default when none is set (reads `.env`, starts Docker C
 | `APP_JWT_SECRET` | required | base64 of ≥ 32 random bytes (`openssl rand -base64 32`) |
 | `APP_BOOTSTRAP_ADMIN_EMAIL` / `APP_BOOTSTRAP_ADMIN_PASSWORD` | unset | creates this ADMIN on startup if it doesn't exist (password ≥ 12 chars) |
 | `APP_CORS_ALLOWED_ORIGINS` | empty (no browser origins) | comma-separated, e.g. `http://localhost:5173` |
+| `APP_FRONTEND_URL` | `http://localhost:5173` | web app that verification and reset links open |
 | `SERVER_PORT` | 8080 | HTTP port |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_PORT` | app / app / required / 5432 | local Compose database |
 | `APP_DESTINATIONS_SYNC_CRON` | `0 */10 * * * *` | destination sync schedule (Spring cron, six fields); `-` disables it |
 | `APP_DESTINATIONS_SYNC_ON_STARTUP` | `true` | run the destination sync once when the app is ready |
 
-Token lifetime is `app.jwt.access-token-ttl` (default `1h`) in `application.yml`. Search limits are `app.search.*`
+Access token lifetime is `app.jwt.access-token-ttl` (default `15m`) in `application.yml`. Account settings are
+`app.auth.*` there: `refresh-token-ttl` 1d, `remember-me-ttl` 30d, `email-verification-ttl` 24h,
+`password-reset-ttl` 30m, `email-cooldown` 1m, and `lockout` (`max-attempts` 5, `window` 15m, `duration` 15m). Search limits are `app.search.*`
 there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `max-children` 10).
 
 ## Production notes
@@ -313,6 +384,9 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 - Build a jar with `./mvnw package` (`target/spring-base-0.0.1-SNAPSHOT.jar`), or a container image with
   `./mvnw spring-boot:build-image`.
 - Provide `APP_JWT_SECRET` from a secret manager. Changing it invalidates every issued token.
+- Set `APP_FRONTEND_URL` to the web app, and wire a real `AuthMailer` before real users sign up (see Known
+  limitations).
+- Behind a reverse proxy, set `server.forward-headers-strategy` so sessions record the client's IP, not the proxy's.
 - Migration V3 creates the `unaccent` and `pg_trgm` extensions. Both are trusted extensions, so the database role
   needs CREATE on the database but not superuser.
 
@@ -331,14 +405,20 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 
 ## Known limitations (deliberate, for a base project)
 
-- **No refresh tokens or revocation.** A stolen access token works until it expires, and so does the token of a
-  disabled user. Keep `access-token-ttl` short, and add refresh tokens when you need long sessions.
-- **No rate limiting on login.** Add one (e.g. Bucket4j or at the gateway) before exposing the API publicly.
-- **Registration reveals whether an email exists** (409). Login does not.
+- **Emails are not sent.** Verification and reset links are written to the log at INFO in every profile, so anyone
+  who can read the log can reset any password. Replace `LoggingAuthMailer` before launch.
+- **No per-IP rate limiting.** Accounts lock after repeated failures, but nothing limits one client trying many
+  emails, and anyone can lock a known email for 15 minutes. Add a limiter (e.g. Bucket4j or at the gateway).
+- **Registration reveals whether an email exists** (409). Login, forgot password and resend do not, apart from
+  response time (a known email does more work).
+- **Two concurrent refreshes of one token sign that device out** (the second looks like a replay). Clients should
+  send one refresh at a time.
+- **One extra database lookup per authenticated request** (the session check that makes sign-out immediate).
 - **Optimistic locking only guards concurrent transactions.** Clients don't send `version`, so a stale edit
   from a client can still overwrite newer data.
 - **Hotel search checks availability only.** No prices, rate plans or taxes yet; `sort` is ignored. Guests are split
   evenly over the rooms, so a hotel that could only host an uneven split (3 adults in a double + a single) is not
   shown.
-- **Public endpoints still reject a bad token.** A request to a public endpoint with an expired or invalid
-  `Authorization` header gets 401, as `/api/auth/login` does; clients should drop expired tokens.
+- **Public search endpoints still reject a bad token.** A request to `/api/search/**` or `/api/destinations/**` with
+  an expired or invalid `Authorization` header gets 401; clients should drop expired tokens. The public account
+  endpoints (`/api/auth/login`, `/refresh`, `/logout`, …) ignore the header.

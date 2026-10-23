@@ -1,5 +1,6 @@
 package com.company.project.user.services.impl;
 
+import java.time.Instant;
 import java.util.Set;
 
 import com.company.project.common.exception.BusinessException;
@@ -23,19 +24,32 @@ public class UserServiceImpl implements UserService {
 
 	@Override
 	@Transactional
-	public User create(String email, String rawPassword, String fullName, Set<Role> roles) {
-		if (UserService.exceedsPasswordByteLimit(rawPassword)) {
-			throw new BusinessException(HttpStatus.BAD_REQUEST,
-					"Password must be at most %d bytes".formatted(MAX_PASSWORD_BYTES));
-		}
+	public User create(String email, String rawPassword, String fullName, String phone, Set<Role> roles,
+			boolean emailVerified) {
+		checkPasswordByteLimit(rawPassword);
 		String normalizedEmail = User.normalizeEmail(email);
 		if (users.existsByEmail(normalizedEmail)) {
 			throw new BusinessException(HttpStatus.CONFLICT, "Email already registered");
 		}
 		// A concurrent registration with the same email still fails on the unique
 		// constraint, which GlobalExceptionHandler maps to 409.
-		User user = User.create(normalizedEmail, passwordEncoder.encode(rawPassword), fullName.trim(), roles);
+		User user = User.create(normalizedEmail, passwordEncoder.encode(rawPassword), fullName, phone, roles,
+				emailVerified ? Instant.now() : null);
 		return users.saveAndFlush(user);
+	}
+
+	@Override
+	@Transactional
+	public void changePassword(User user, String rawPassword) {
+		checkPasswordByteLimit(rawPassword);
+		user.changePasswordHash(passwordEncoder.encode(rawPassword));
+	}
+
+	private static void checkPasswordByteLimit(String rawPassword) {
+		if (UserService.exceedsPasswordByteLimit(rawPassword)) {
+			throw new BusinessException(HttpStatus.BAD_REQUEST,
+					"Password must be at most %d bytes".formatted(MAX_PASSWORD_BYTES));
+		}
 	}
 
 }
