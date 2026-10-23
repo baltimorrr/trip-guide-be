@@ -48,6 +48,10 @@ public record SearchCriteria(LocalDate checkIn, LocalDate checkOut, int rooms, i
 		return new SearchCriteria(checkIn, checkOut, rooms, adults, List.copyOf(childAges));
 	}
 
+	public int nights() {
+		return (int) ChronoUnit.DAYS.between(checkIn, checkOut);
+	}
+
 	public int children() {
 		return childAges.size();
 	}

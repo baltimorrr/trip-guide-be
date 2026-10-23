@@ -1,6 +1,6 @@
 # Hotel Booking Platform – User Stories
 
-Last updated: 22 Oct 2026 · matches database design `hotel_booking.dbml` (54 tables)
+Last updated: 23 Oct 2026 · matches database design `hotel_booking.dbml` (54 tables)
 
 ## Changes in this version
 
@@ -18,6 +18,7 @@ Updated to match the decisions taken during the database design. Changed stories
 | One partner (business) per hotel; many users can manage a partner | A-USER-02, A-PAY-02 |
 | Season and weekend prices plus single-date overrides | O-ROOM-03 |
 | Sign-in uses a short-lived access token and a refresh token stored per device | C-AUTH-02, C-AUTH-05 |
+| Sold-out hotels are hidden from results; a multi-room search is priced as the cheapest mix of room types | C-SRCH-01 |
 
 ## Overview
 
@@ -97,13 +98,15 @@ The platform has a client site for travellers and an admin site shared by hotel 
 
 ## 3. Client – Search results, filters, currency and map
 
-1. **C-SRCH-01 Hotel result list (MVP)** — As a guest, I want a list of available hotels matching my search, each showing its cheapest available room, so that I can compare options.
+1. **C-SRCH-01 Hotel result list (MVP) ✅ Implemented** — As a guest, I want a list of available hotels matching my search, each showing its cheapest available room, so that I can compare options.
    - Each card shows: photos (carousel), hotel name, star rating, Google rating, user rating and review count, distance from city centre, board type, cancellation policy (e.g. "Free cancellation until 12 Oct"), number of nights, and total price for the stay.
    - The price shown is the lowest room that fits the requested guests and rooms for the selected dates; it states whether taxes are included.
-   - Hotels with no availability for the dates are hidden (or shown as "Sold out" — decision needed).
+   - Hotels with no availability for the dates are hidden (decided 23 Oct 2026: not shown as "Sold out").
    - Result count is shown (e.g. "124 hotels in Da Nang").
    - Results are paginated or load more on scroll.
    - Clicking a card opens the hotel detail page with the same search criteria.
+   - For a multi-room search the price is the cheapest mix: rooms come from the cheapest room type first, and the card lists each room type used.
+   - The card states whether taxes are included; the tax amounts are shown in the checkout breakdown (C-BOOK-02). The detail page itself is C-HOTEL-01/04.
 2. **C-SRCH-02 Filter results (MVP)** — As a guest, I want to filter results so that I only see hotels that match my needs.
    - Filters: hotel name, star rating, Google rating, user rating, board type (room only, breakfast, half board, full board, all-inclusive), cancellation policy (free / non-refundable), services and facilities, bed type, accommodation type (hotel, resort, apartment, villa, hostel), room features, price range, distance from centre.
    - Each filter option shows how many hotels match it.
@@ -378,6 +381,7 @@ The original requirements name the admin only as the approver of owner changes; 
 - [x] Daily prices and inventory go live without admin approval; hotel content and new room types need approval.
 - [x] One partner per hotel; many users per partner.
 - [x] Destinations are synced from hotel addresses; search history is not stored.
+- [x] Sold-out hotels are hidden from search results, not shown as "Sold out".
 - [x] Sessions: the refresh token rotates on every use and reusing an old one revokes the session; the last used time is stored, no device name. Every request checks the access token's session, so sign-out takes effect at once.
 
 **Open questions to decide**
@@ -388,6 +392,5 @@ The original requirements name the admin only as the approver of owner changes; 
 - [ ] Which currency is the card charged in: the hotel's currency, the platform's base currency, or the customer's chosen currency?
 - [ ] Who funds discount codes: the platform, the hotel, or shared?
 - [ ] Can a customer cancel one room from a multi-room booking, or only the whole booking?
-- [ ] Are sold-out hotels hidden from search or shown as "Sold out"?
 - [ ] Is "user rating" from our own reviews only at launch, and what is shown before a hotel has any reviews?
 - [ ] Does the platform collect full payment upfront (merchant model) or does the guest pay at the hotel for some rates?

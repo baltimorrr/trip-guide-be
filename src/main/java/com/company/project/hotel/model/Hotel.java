@@ -2,6 +2,7 @@ package com.company.project.hotel.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalTime;
 
 import com.company.project.common.model.BaseEntity;
 import jakarta.persistence.Column;
@@ -16,6 +17,8 @@ import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcType;
+import org.hibernate.type.descriptor.jdbc.LocalTimeJdbcType;
 
 /**
  * A hotel listing, read by search and the homepage. Hotels are not created through JPA yet, so this maps
@@ -58,6 +61,20 @@ public class Hotel extends BaseEntity {
 
 	@Column(name = "user_rating_count", nullable = false)
 	private int userRatingCount;
+
+	/** Selling currency (ISO 4217): the hotel's rate plans are priced in it. */
+	@Column(nullable = false, length = 3)
+	private String currency;
+
+	/** IANA zone of the hotel ("Asia/Ho_Chi_Minh"); check-in times and cancellation deadlines are local to it. */
+	@Column(nullable = false, length = 50)
+	private String timezone;
+
+	// A wall-clock time in the hotel's zone. Read it as-is: with hibernate.jdbc.time_zone set, the default TIME
+	// mapping shifts it from UTC to the JVM's zone (14:00 became 21:00 on a +07:00 machine).
+	@JdbcType(LocalTimeJdbcType.class)
+	@Column(name = "check_in_from", nullable = false)
+	private LocalTime checkInFrom;
 
 	@Enumerated(EnumType.STRING)
 	@Column(nullable = false, length = 20)

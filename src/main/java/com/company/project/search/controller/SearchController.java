@@ -36,7 +36,8 @@ public class SearchController {
 
 	/**
 	 * {@code ?destination=vn-da-nang&checkIn=2026-11-01&checkOut=2026-11-03&rooms=1&adults=2&childAges=7}.
-	 * Results are ordered by user rating; a {@code sort} parameter is ignored.
+	 * Each hotel comes with its cheapest offer for the stay (rooms from the cheapest room type up). Results are
+	 * ordered by user rating; a {@code sort} parameter is ignored.
 	 */
 	@GetMapping("/hotels")
 	@SecurityRequirements // public: no bearer token in the API docs

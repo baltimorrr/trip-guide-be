@@ -22,10 +22,16 @@ public interface HotelRepositoryCustom {
 	/** Best-rated listed hotels inside a destination. */
 	List<HotelCardView> findTopInDestination(long destinationId, int limit);
 
-	/** Ids of listed hotels inside the destination that can host the stay, best user rating first. */
-	Page<Long> findAvailableInDestination(long destinationId, StayRequirement stay, Pageable pageable);
+	/** Photos of these hotels themselves (no room photos), per hotel cover first, then in their order. */
+	List<HotelPhotoView> findHotelPhotos(Collection<Long> hotelIds);
 
-	/** The hotel's id when it is listed and can host the stay, else an empty page. */
-	Page<Long> findAvailableHotel(long hotelId, StayRequirement stay, Pageable pageable);
+	/**
+	 * Listed hotels inside the destination that can sell the stay, each with its cheapest offer, best user
+	 * rating first.
+	 */
+	Page<HotelOfferView> findAvailableInDestination(long destinationId, StayRequirement stay, Pageable pageable);
+
+	/** The hotel with its cheapest offer when it is listed and can sell the stay, else an empty page. */
+	Page<HotelOfferView> findAvailableHotel(long hotelId, StayRequirement stay, Pageable pageable);
 
 }

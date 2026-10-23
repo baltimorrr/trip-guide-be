@@ -11,9 +11,9 @@ notes and the "Adding a feature" checklist.
 
 `USER_STORIES.md` and `DATABASE-SCHEMA.md` (dbdiagram.io DBML, 54 tables) describe the Hotel Booking Platform this base
 is meant to become. Implemented so far: the homepage stories C-HOME-01/02/03 (`search/`, `destination/`, migration V3),
-the admin slice of A-CONT-01 that curates destinations, and the email-account stories C-AUTH-01/02/04/05/06 (`auth/`,
-`user/`, migration V4; emails are only logged). The schema doc says it was generated from a `schema.sql`
-that is not in this repo.
+the priced result list C-SRCH-01 (`rate/`, `tax/`, migration V5), the admin slice of A-CONT-01 that curates
+destinations, and the email-account stories C-AUTH-01/02/04/05/06 (`auth/`, `user/`, migration V4; emails are only
+logged). The schema doc says it was generated from a `schema.sql` that is not in this repo.
 
 **Decided (2026-10-21): new tables keep the schema doc's table and column names but follow this project's
 conventions.** That means identity `bigint` ids, a `version` column, and `created_at`/`updated_at` set by auditing.
@@ -143,7 +143,9 @@ The rest works as follows:
   plus pg_trgm's `word_similar(a, b)` (renders `a <% b`, indexable) and `word_similarity(a, b)`. Hibernate
   renders them as-is, so the indexes still apply. Native SQL (`createNativeQuery`) is only for what JPQL can't
   express well, with a comment saying why:
-  - the per-night availability check in `HotelRepositoryImpl`. It returns hotel ids only; JPQL loads the cards.
+  - the priced availability check in `HotelRepositoryImpl`: one row per night, `night_price()` per rate plan and
+    night, `distinct on` for each room type's cheapest plan, and a running sum that fills the rooms from the cheapest
+    room type up. It returns ids, quantities and prices only; JPQL loads the cards, photos and rate descriptions.
   - the bulk `ON CONFLICT` insert, the spelling refresh (both `mode()`) and the advisory lock in
     `DestinationSyncRepositoryImpl`.
 
@@ -159,6 +161,12 @@ The rest works as follows:
   inside it) and `hotel_count`. Admin-owned columns (`name`, `image_url`, `featured_rank`) are never written by it,
   and the `Destination` entity marks the sync-owned columns `updatable = false`.
 - Search is stateless. Every criterion is a GET parameter, and the browser keeps the "last search" itself.
+- The SQL function `night_price(plan_id, night)` (V5) is the only definition of a night's price: date override, then
+  the highest-priority rule, then the base price. Cart and booking must call it too, never re-implement it. Closed
+  nights and minimum stays live in `rate_plan_prices` beside it. A room counts as available only when an active rate
+  plan in the hotel's currency can sell every night. Hibernate's default `TIME` mapping shifts values by the JVM's
+  zone (because `jdbc.time_zone` is UTC), so wall-clock times such as `Hotel.checkInFrom` use
+  `@JdbcType(LocalTimeJdbcType.class)`.
 - Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels).
 
 ## Tests
@@ -173,11 +181,12 @@ The rest works as follows:
 - `@IntegrationTest` imports `RecordingAuthMailer.Config`, a `@Primary` mailer that keeps the last link per email.
   Read links with its static `verificationToken(email)` / `resetToken(email)`; don't add a mailer mock (that would
   start a second context). `app.auth.email-cooldown` is 0 in tests.
-- `CatalogFixtures` inserts partners, hotels, room types, inventory and photos with `JdbcClient` (test code only),
-  since no hotel write API exists yet. Give every place and hotel a `uniqueSuffix()`, call
-  `DestinationSyncService.sync()` yourself (the `test` profile disables the schedule), and assert only on your own
-  slugs. Featured and popular lists are
-  shared by all tests, so assert relative order, not positions.
+- `CatalogFixtures` inserts partners, hotels, room types, rate plans, rules, inventory, photos and tax rules with
+  `JdbcClient` (test code only), since no hotel write API exists yet. `roomType` adds a sellable default rate plan
+  (`bareRoomType` none). Tax rules apply to a whole country, so tax tests use their own `XA`–`XZ` codes, never `VN`.
+  Give every place and hotel a `uniqueSuffix()`, call `DestinationSyncService.sync()` yourself (the `test` profile
+  disables the schedule), and assert only on your own slugs. Featured and popular lists are shared by all tests, so
+  assert relative order, not positions.
 - JDBC reads `smallint` back as `Integer`, not `Short`.
 - A `@DataJpaTest` needs `@AutoConfigureTestDatabase(replace = NONE)`, `@Import({TestcontainersConfiguration.class,
   JpaAuditingConfig.class})` and `@ActiveProfiles("test")`. Without the auditing import, inserts fail on the not-null
@@ -203,7 +212,8 @@ The rest works as follows:
 - List endpoints return `PageResponse.from(page)`, never a raw `Page`. The page size is capped at 100 globally.
 - README "Known limitations" lists gaps left in on purpose: emails are only logged, no per-IP sign-in rate limiting
   (accounts lock instead), registration's 409 reveals existing emails, concurrent refreshes sign a device out. It also
-  covers the limits of the hotel search (availability only, even split of guests per room).
+  covers the limits of the hotel search (no sort/filters/currency conversion, room prices only with a tax flag, even
+  split of guests per room).
 - JPQL bulk updates bypass auditing and versioning: write `update versioned X` and set `updatedAt` yourself (see
   `UserSessionRepositoryImpl`).
 - Public endpoints need a `permitAll` matcher in `SecurityConfig` and an empty `@SecurityRequirements` on the

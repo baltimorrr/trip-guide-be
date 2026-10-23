@@ -16,8 +16,8 @@ public interface SearchService {
 	SuggestionsResponse suggest(String query, int limit);
 
 	/**
-	 * Hotels that can host the whole stay. Throws BusinessException (400) for invalid criteria and
-	 * ResourceNotFoundException (404) for an unknown destination or hotel.
+	 * Hotels that can sell the whole stay, each with its cheapest offer (C-SRCH-01). Throws BusinessException (400)
+	 * for invalid criteria and ResourceNotFoundException (404) for an unknown destination or hotel.
 	 */
 	Page<HotelSearchResult> searchHotels(HotelSearchRequest request, Pageable pageable);
 

@@ -5,8 +5,8 @@ role-based access, consistent JSON errors, database migrations, API docs, and te
 One sample feature (`product`) shows the conventions end to end.
 
 It also holds the first features of the Hotel Booking Platform described in `USER_STORIES.md`: the homepage's
-location autocomplete, hotel availability search and popular destinations (C-HOME-01/02/03), plus the admin
-endpoints that curate those destinations. See [Search and destinations](#search-and-destinations). Customer accounts
+location autocomplete, hotel availability search and popular destinations (C-HOME-01/02/03), the priced hotel
+result list (C-SRCH-01), plus the admin endpoints that curate those destinations. See [Search and destinations](#search-and-destinations). Customer accounts
 (C-AUTH-01/02/04/05/06) have email verification, sign-in sessions per device, lockout, password reset and a profile.
 See [Accounts and sessions](#accounts-and-sessions).
 
@@ -107,7 +107,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 | PUT | `/api/products/{id}` | ADMIN | |
 | DELETE | `/api/products/{id}` | ADMIN | 204 |
 | GET | `/api/search/suggestions?q=&limit=` | public | `{destinations: [...], hotels: [...]}`; `q` 2–100 chars; `limit` per list, max 10 |
-| GET | `/api/search/hotels?destination=\|hotel=&checkIn=&checkOut=&rooms=&adults=&childAges=` | public | paged; hotels that can host the stay; 400 invalid criteria, 404 unknown slug |
+| GET | `/api/search/hotels?destination=\|hotel=&checkIn=&checkOut=&rooms=&adults=&childAges=` | public | paged; hotels that can sell the stay, each with its cheapest offer; 400 invalid criteria, 404 unknown slug |
 | GET | `/api/destinations/popular?limit=&hotels=` | public | featured destinations with their best hotels; max 20 × 10 |
 | GET | `/api/destinations/{slug}` | public | 404 if missing |
 | GET | `/api/admin/destinations?q=` | ADMIN | paged; name prefix, featured first |
@@ -192,7 +192,35 @@ A hotel is returned when its `ACTIVE` room types that fit the guests have, toget
 every night. Guests are split evenly: 3 adults and 1 child in 2 rooms need rooms for 2 adults and 1 child. A room type
 fits when `max_adults` covers the adults per room, `max_occupancy` covers everyone, and the children fit in
 `max_children` plus the adult places left free. A night without a `room_inventory` row has the room type's
-`total_rooms` free. Results are ordered by user rating. Prices are not part of this search yet.
+`total_rooms` free, and a room only counts when one of its rate plans can sell the whole stay (see Prices).
+Hotels that can't are hidden, not shown as sold out. Results are ordered by user rating; `page.totalElements`
+is the result count ("124 hotels in Đà Nẵng", the name coming from the suggestion or `/api/destinations/{slug}`).
+
+**Prices (C-SRCH-01).** Each result carries `offer`, the cheapest way the hotel can host the stay:
+
+- A room type is sold through rate plans (`rate_plans`: board type, cancellation policy, base price per room per
+  night). A plan can sell the stay when it is active, priced in the hotel's currency (`hotels.currency`), has no
+  closed night (`rate_plan_prices.is_closed`) and the stay is at least as long as the longest minimum stay of its
+  nights (`coalesce(rate_plan_prices.min_nights, rate_plans.min_nights)`).
+- A night's price comes from the SQL function `night_price()`, the only definition of it: the owner's price for that
+  date (`rate_plan_prices`), else the active `rate_rules` row with the highest priority (then the newest) covering
+  the date and weekday (set a price, +/- an amount, +/- a percent of the base price), else the base price.
+- Each room type uses its cheapest plan, and rooms are taken from the cheapest room type up. `roomLines` has one
+  line per room type used, so a 2-room search can show "1 × Deluxe + 1 × Family Suite" when only one Deluxe is free.
+- Money is `{"amount": 2400000, "currency": "VND"}`: major units, with the currency's ISO 4217 decimals
+  (`"amount": 129.50` for USD). The database keeps whole minor units (`*_minor`).
+- `taxesIncluded` is true when no active `tax_rules` row of the hotel's country, valid on a night of the stay, adds
+  tax on top of the price (a country without rules counts as included). The amounts come with the checkout breakdown.
+- Each line has `cancellation`: `freeUntil` is check-in day at `hotels.check_in_from` in `hotels.timezone`, minus
+  the largest `hours_before_check_in` among the policy's rules with a penalty; it is null for a non-refundable policy
+  or once that moment has passed. The client shows "Free cancellation until 12 Oct", the policy name, or
+  "Non-refundable".
+- `photoUrls` lists up to 10 photos of the hotel itself, cover first. A card links to the hotel by `slug`, with the
+  same query parameters.
+
+There are no write endpoints for rates, policies or taxes yet: the local demo seed adds two plans per room type
+(room only with free cancellation; breakfast, non-refundable, 10% less), a +20% Friday/Saturday rule, one date
+override and Vietnam's VAT on top.
 
 **Popular destinations** are the ones an admin featured (`featuredRank`, lowest first), each with its best-rated
 listed hotels. While nothing is featured, the cities with the most hotels are shown. Clicking one runs the default
@@ -249,7 +277,10 @@ Nẵng, Hồ Chí Minh, Hà Nội and Hội An (one inactive hotel in Huế), an
 | `SearchControllerTest` | full app | accent-insensitive suggestions, half-typed words and typos in place names, escaped wildcards, availability (closed/sold-out nights, capacity, several rooms, children), validation |
 | `DestinationControllerTest` | full app | popular order and best hotels, default search for a clicked destination, lookup by slug |
 | `AdminDestinationControllerTest` | full app | ADMIN only, name-prefix list, update + validation, renamed country in its places' labels, sync on demand |
+| `SearchControllerPricingTest` | full app | cheapest plan and room type, night price order (override, rule priority, base), closed nights and minimum stays, unsellable room types, cheapest room mix, tax flag, free-cancellation deadline, photos, paging |
 | `SearchCriteriaTest` | unit | date, length and guest rules; even split of guests per room |
+| `FreeCancellationTest` | unit | deadline from the policy's penalty hours in the hotel's zone, non-refundable, passed deadline, daylight saving |
+| `MoneyTest` | unit | minor units scaled by the currency's decimals |
 | `DestinationServiceImplTest` | unit | featured order, fallback to top cities, limits |
 
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
@@ -258,7 +289,9 @@ container, so the suite stays fast. Tests create their own data with unique emai
 `@IntegrationTest` swaps the logging mailer for `RecordingAuthMailer`, so tests follow emailed links like a user;
 `TestAuth.userToken` registers, verifies and signs in.
 Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, then call the destination sync
-themselves (the `test` profile never schedules it). Unit tests use Mockito and start no Spring context.
+themselves (the `test` profile never schedules it). `CatalogFixtures.roomType` also adds a sellable rate plan
+(`bareRoomType` adds none). Tax rules apply to a whole country, so tax tests use their own user-assigned country codes
+(`XA`–`XZ`). Unit tests use Mockito and start no Spring context.
 
 `TestProjectApplication` (in `src/test`) runs the app against a Testcontainers database instead of Docker Compose.
 
@@ -271,7 +304,7 @@ src/main/java/com/company/project/
 │   ├── config/                          SecurityConfig, OpenApiConfig (API docs), JpaAuditingConfig, SchedulingConfig
 │   ├── persistence/                     DatabaseFunctionContributor: norm() callable from JPQL
 │   ├── validation/                      @StrongPassword, @PhoneNumber, @IsoCountry, @IsoCurrency
-│   ├── dto/PageResponse.java            paged list body: {content, page}
+│   ├── dto/                             PageResponse (paged list body: {content, page}), Money
 │   ├── exception/                       GlobalExceptionHandler, BusinessException, ResourceNotFoundException,
 │   │                                    ProblemDetailSecurityHandler (401/403 → problem+json)
 │   └── model/BaseEntity.java            id, version, createdAt, updatedAt
@@ -284,18 +317,23 @@ src/main/java/com/company/project/
 │   └── bootstrap/                       first admin account on startup
 ├── product/                             sample feature: copy this shape
 │   └── controller/  model/  repository/  dto/  mapper/  services/ (+ impl/)
-├── hotel/                               hotel catalog read model: entities, HotelRepository, shared query fragments
+├── hotel/                               hotel catalog read model: entities, HotelRepository (priced availability),
+│   └── model/  repository/ (+ impl/)    shared query fragments
+├── rate/                                rate plans, board types, cancellation policies (read model)
+│   └── model/  repository/ (+ impl/)
+├── tax/                                 tax rules per country (read model)
 │   └── model/  repository/ (+ impl/)
 ├── destination/                         destinations: sync, popular, lookup, admin curation
 │   ├── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
 │   └── sync/                            scheduled and on-startup destination sync
-└── search/                              homepage search: suggestions, hotel availability
+└── search/                              homepage search: suggestions, hotel result list with prices
     └── controller/  config/  model/  dto/  mapper/  services/ (+ impl/)
 src/main/resources/
 ├── application.yml                      defaults for every profile
 ├── application-local.yml                local dev (the default profile): .env, Docker Compose, demo seed
 ├── application-prod.yml                 production overrides
-├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions
+├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions,
+│                                        V5 rates + taxes + night_price()
 └── db/seed/R__demo_catalog.sql          demo hotels, local profile only
 ```
 
@@ -398,8 +436,8 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 2. Rename `groupId`/`artifactId`/`name` in `pom.xml`, the `com.company.project` package (and `ProjectApplication`
    if you like), and `spring.application.name`.
 3. Delete or replace the `product` feature and `V2__create_product_tables.sql`, and the hotel features if you don't
-   need them (`hotel/`, `destination/`, `search/`, `SchedulingConfig`, `V3__create_hotel_catalog_tables.sql`,
-   `db/seed/`, the `app.search` / `app.destinations` settings and their `SecurityConfig` matchers). If the copy is
+   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `SchedulingConfig`,
+   `V3__create_hotel_catalog_tables.sql`, `V5__create_rate_and_tax_tables.sql`, `db/seed/`, the `app.search` / `app.destinations` settings and their `SecurityConfig` matchers). If the copy is
    brand new and has never run, you may renumber migrations.
 4. `git init`.
 
@@ -416,9 +454,16 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 - **One extra database lookup per authenticated request** (the session check that makes sign-out immediate).
 - **Optimistic locking only guards concurrent transactions.** Clients don't send `version`, so a stale edit
   from a client can still overwrite newer data.
-- **Hotel search checks availability only.** No prices, rate plans or taxes yet; `sort` is ignored. Guests are split
-  evenly over the rooms, so a hotel that could only host an uneven split (3 adults in a double + a single) is not
-  shown.
+- **Hotel search has no sorting, filters or currency conversion yet** (C-SRCH-02/03/05). `sort` is ignored, and prices
+  are in the hotel's own currency. Guests are split evenly over the rooms, so a hotel that could only host an uneven
+  split (3 adults in a double + a single) is not shown.
+- **Search prices are room prices only.** They don't change with the number of guests or children's ages, tax is a
+  yes/no flag (amounts come with checkout, C-BOOK-02), and there are no discounts or promotions. Rates, policies and
+  taxes have no write endpoints yet: enter them with SQL or the demo seed.
+- **`night_price()` runs once per rate plan and night of every candidate hotel.** That's quick for a city. A
+  country-wide search over thousands of hotels may need a precomputed price calendar.
+- **A hotel's `timezone` must be a valid IANA zone.** Search reads it to place the free-cancellation deadline, and an
+  invalid value fails the request with a 500. The hotel write API (O-HOTEL-01) must validate it.
 - **Public search endpoints still reject a bad token.** A request to `/api/search/**` or `/api/destinations/**` with
   an expired or invalid `Authorization` header gets 401; clients should drop expired tokens. The public account
   endpoints (`/api/auth/login`, `/refresh`, `/logout`, …) ignore the header.

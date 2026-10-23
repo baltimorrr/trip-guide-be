@@ -162,7 +162,8 @@ class SearchControllerTest {
 		assertThat(result).hasStatusOk();
 		assertThat(names(result)).containsExactly("Available " + suffix);
 		assertThat(result).bodyJson().extractingPath("$.page.totalElements").isEqualTo(1);
-		assertThat(result).bodyJson().extractingPath("$.content[0].coverPhotoUrl").isEqualTo("https://img.test/cover.jpg");
+		assertThat(JsonPath.<List<String>>read(body(result), "$.content[0].photoUrls"))
+			.containsExactly("https://img.test/cover.jpg", "https://img.test/second.jpg");
 		assertThat(result).bodyJson().extractingPath("$.content[0].accommodationType").isEqualTo("hotel");
 		assertThat(result).bodyJson().extractingPath("$.content[0].city").isEqualTo(city);
 	}

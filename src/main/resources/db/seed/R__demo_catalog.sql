@@ -76,3 +76,69 @@ values ('CITY', 'Đà Nẵng', 'vn-da-nang', 'VN', 'Đà Nẵng', 'Đà Nẵng',
        ('CITY', 'Hội An', 'vn-hoi-an', 'VN', 'Quảng Nam', 'Hội An',
         'https://picsum.photos/seed/vn-hoi-an/1200/800', 4, now(), now())
 on conflict (country_code, province_key, city_key, district_key, ward_key) where deleted_at is null do nothing;
+
+-- Prices, relative to the day this part first ran. Two platform cancellation policies; every demo room type sold
+-- room-only with free cancellation, or with breakfast at 10% less but non-refundable; +20% on Friday and Saturday
+-- nights for the room-only plans; one date override; and Vietnam's VAT added on top of the price.
+do $$
+declare
+    free_policy   bigint;
+    strict_policy bigint;
+begin
+    select id into free_policy from cancellation_policies
+    where hotel_id is null and name = 'Free cancellation until 24 hours before check-in';
+    if free_policy is null then
+        insert into cancellation_policies (name, is_refundable, created_at, updated_at)
+        values ('Free cancellation until 24 hours before check-in', true, now(), now())
+        returning id into free_policy;
+        insert into cancellation_policy_rules (policy_id, hours_before_check_in, penalty_type, penalty_value,
+                                               created_at, updated_at)
+        values (free_policy, 24, 'PERCENT', 100, now(), now());
+    end if;
+
+    select id into strict_policy from cancellation_policies where hotel_id is null and name = 'Non-refundable';
+    if strict_policy is null then
+        insert into cancellation_policies (name, is_refundable, created_at, updated_at)
+        values ('Non-refundable', false, now(), now())
+        returning id into strict_policy;
+        insert into cancellation_policy_rules (policy_id, hours_before_check_in, penalty_type, penalty_value,
+                                               created_at, updated_at)
+        values (strict_policy, 100000, 'PERCENT', 100, now(), now());
+    end if;
+
+    insert into rate_plans (room_type_id, name, board_type_id, cancellation_policy_id, base_price_minor, currency,
+                            created_at, updated_at)
+    select rt.id, p.name, (select id from board_types where code = p.board),
+           case when p.refundable then free_policy else strict_policy end,
+           cast(case rt.name when 'Family Suite' then 500000 else 300000 end as bigint) * h.star_rating * p.factor / 100,
+           h.currency, now(), now()
+    from room_types rt
+    join hotels h on h.id = rt.hotel_id
+    cross join (values ('Room only, free cancellation', 'RO', true, 100),
+                       ('Breakfast, non-refundable', 'BB', false, 90)) as p(name, board, refundable, factor)
+    where h.slug like '%-demo' and not exists (select 1 from rate_plans rp where rp.room_type_id = rt.id);
+
+    insert into rate_rules (rate_plan_id, name, date_from, date_to, days_of_week, adjustment, percent, created_at,
+                            updated_at)
+    select rp.id, 'Weekend', current_date, current_date + 365, '{5,6}', 'PERCENT', 20, now(), now()
+    from rate_plans rp
+    join room_types rt on rt.id = rp.room_type_id
+    join hotels h on h.id = rt.hotel_id
+    join board_types b on b.id = rp.board_type_id
+    where h.slug like '%-demo' and b.code = 'RO'
+      and not exists (select 1 from rate_rules r where r.rate_plan_id = rp.id);
+
+    -- New Year's Eve style override: the date price wins over the weekend rule and the base price.
+    insert into rate_plan_prices (rate_plan_id, stay_date, price_minor)
+    select rp.id, current_date + 10, 9999000
+    from rate_plans rp
+    join room_types rt on rt.id = rp.room_type_id
+    join hotels h on h.id = rt.hotel_id
+    join board_types b on b.id = rp.board_type_id
+    where h.slug = 'my-khe-beach-resort-demo' and rt.name = 'Deluxe Double' and b.code = 'RO'
+      and not exists (select 1 from rate_plan_prices pp where pp.rate_plan_id = rp.id);
+
+    insert into tax_rules (country_code, name, calc_type, value, is_included, created_at, updated_at)
+    select 'VN', 'VAT', 'PERCENT', 10, false, now(), now()
+    where not exists (select 1 from tax_rules where country_code = 'VN' and name = 'VAT');
+end $$;
