@@ -1,5 +1,6 @@
 package com.company.project.search.services;
 
+import com.company.project.search.dto.HotelFilterCounts;
 import com.company.project.search.dto.HotelSearchRequest;
 import com.company.project.search.dto.HotelSearchResult;
 import com.company.project.search.dto.SuggestionsResponse;
@@ -16,9 +17,16 @@ public interface SearchService {
 	SuggestionsResponse suggest(String query, int limit);
 
 	/**
-	 * Hotels that can sell the whole stay, each with its cheapest offer (C-SRCH-01). Throws BusinessException (400)
-	 * for invalid criteria and ResourceNotFoundException (404) for an unknown destination or hotel.
+	 * Hotels that pass the filters (C-SRCH-02) and can sell the whole stay, each with its cheapest allowed offer
+	 * (C-SRCH-01), in the order the Pageable's sort names (C-SRCH-03). Throws BusinessException (400) for invalid
+	 * criteria or sort and ResourceNotFoundException (404) for an unknown destination or hotel.
 	 */
 	Page<HotelSearchResult> searchHotels(HotelSearchRequest request, Pageable pageable);
+
+	/**
+	 * Every filter option with the number of hotels the result list would show if it were picked, plus the price
+	 * range per night (C-SRCH-02). Same parameters and errors as {@link #searchHotels}.
+	 */
+	HotelFilterCounts filterCounts(HotelSearchRequest request);
 
 }

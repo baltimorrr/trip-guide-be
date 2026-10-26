@@ -13,9 +13,11 @@ import org.springframework.validation.annotation.Validated;
  * @param maxRooms most rooms in one search
  * @param maxAdults most adults in one search
  * @param maxChildren most children in one search
+ * @param ratingSortMinReviews reviews a hotel needs to be ranked by its user rating when results are sorted by
+ * rating, so a single 10/10 review does not top the list
  */
 @Validated
 @ConfigurationProperties("app.search")
 public record SearchProperties(@Positive int maxNights, @Positive int maxDaysAhead, @Positive int maxRooms,
-		@Positive int maxAdults, @PositiveOrZero int maxChildren) {
+		@Positive int maxAdults, @PositiveOrZero int maxChildren, @Positive int ratingSortMinReviews) {
 }

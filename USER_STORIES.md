@@ -107,13 +107,14 @@ The platform has a client site for travellers and an admin site shared by hotel 
    - Clicking a card opens the hotel detail page with the same search criteria.
    - For a multi-room search the price is the cheapest mix: rooms come from the cheapest room type first, and the card lists each room type used.
    - The card states whether taxes are included; the tax amounts are shown in the checkout breakdown (C-BOOK-02). The detail page itself is C-HOTEL-01/04.
-2. **C-SRCH-02 Filter results (MVP)** — As a guest, I want to filter results so that I only see hotels that match my needs.
+2. **C-SRCH-02 Filter results (MVP) ✅ Implemented** — As a guest, I want to filter results so that I only see hotels that match my needs.
    - Filters: hotel name, star rating, Google rating, user rating, board type (room only, breakfast, half board, full board, all-inclusive), cancellation policy (free / non-refundable), services and facilities, bed type, accommodation type (hotel, resort, apartment, villa, hostel), room features, price range, distance from centre.
    - Each filter option shows how many hotels match it.
    - Several filters can be combined; active filters show as chips that can be removed one by one or cleared together.
    - Filters are kept in the URL so they survive refresh and sharing.
-3. **C-SRCH-03 Sort results [Added] (MVP)** — As a guest, I want to sort results by recommended, lowest price, highest rating or nearest to centre so that the best options come first.
+3. **C-SRCH-03 Sort results [Added] (MVP) 🟡 Partly implemented** — As a guest, I want to sort results by recommended, lowest price, highest rating or nearest to centre so that the best options come first.
    - Sorting by user rating requires a minimum number of reviews so a single 10/10 review does not top the list.
+   - Left: the "recommended" sort (decided 23 Oct 2026: postponed until it has a definition). Lowest price, highest rating and nearest to centre work; until currency conversion (C-SRCH-05), the price sort compares one currency and lists hotels selling in another one last.
 4. **C-SRCH-04 Modify search [Added] (MVP)** — As a guest, I want to change destination, dates, rooms or guests from the results page without going back to the homepage.
 5. **C-SRCH-05 Change currency (MVP)** — As a guest, I want to choose a display currency so that I understand prices in my own money.
    - Currency selector in the header; choice is saved for the session and in the profile for signed-in users.

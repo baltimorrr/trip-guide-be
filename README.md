@@ -6,7 +6,8 @@ One sample feature (`product`) shows the conventions end to end.
 
 It also holds the first features of the Hotel Booking Platform described in `USER_STORIES.md`: the homepage's
 location autocomplete, hotel availability search and popular destinations (C-HOME-01/02/03), the priced hotel
-result list (C-SRCH-01), plus the admin endpoints that curate those destinations. See [Search and destinations](#search-and-destinations). Customer accounts
+result list (C-SRCH-01) with its filters, filter counts and sorting (C-SRCH-02/03), plus the admin endpoints that
+curate those destinations. See [Search and destinations](#search-and-destinations). Customer accounts
 (C-AUTH-01/02/04/05/06) have email verification, sign-in sessions per device, lockout, password reset and a profile.
 See [Accounts and sessions](#accounts-and-sessions).
 
@@ -107,7 +108,8 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 | PUT | `/api/products/{id}` | ADMIN | |
 | DELETE | `/api/products/{id}` | ADMIN | 204 |
 | GET | `/api/search/suggestions?q=&limit=` | public | `{destinations: [...], hotels: [...]}`; `q` 2–100 chars; `limit` per list, max 10 |
-| GET | `/api/search/hotels?destination=\|hotel=&checkIn=&checkOut=&rooms=&adults=&childAges=` | public | paged; hotels that can sell the stay, each with its cheapest offer; 400 invalid criteria, 404 unknown slug |
+| GET | `/api/search/hotels?destination=\|hotel=&checkIn=&checkOut=&rooms=&adults=&childAges=` + filters, `sort` | public | paged; hotels that pass the filters and can sell the stay, each with its cheapest allowed offer; 400 invalid criteria or sort, 404 unknown slug |
+| GET | `/api/search/hotels/filters?` (same parameters, no paging) | public | every filter option with its hotel count, price range per night |
 | GET | `/api/destinations/popular?limit=&hotels=` | public | featured destinations with their best hotels; max 20 × 10 |
 | GET | `/api/destinations/{slug}` | public | 404 if missing |
 | GET | `/api/admin/destinations?q=` | ADMIN | paged; name prefix, featured first |
@@ -193,8 +195,8 @@ every night. Guests are split evenly: 3 adults and 1 child in 2 rooms need rooms
 fits when `max_adults` covers the adults per room, `max_occupancy` covers everyone, and the children fit in
 `max_children` plus the adult places left free. A night without a `room_inventory` row has the room type's
 `total_rooms` free, and a room only counts when one of its rate plans can sell the whole stay (see Prices).
-Hotels that can't are hidden, not shown as sold out. Results are ordered by user rating; `page.totalElements`
-is the result count ("124 hotels in Đà Nẵng", the name coming from the suggestion or `/api/destinations/{slug}`).
+Hotels that can't are hidden, not shown as sold out. Without `sort`, results are ordered by user rating (best
+average first, then most reviews); `page.totalElements` is the result count ("124 hotels in Đà Nẵng", the name coming from the suggestion or `/api/destinations/{slug}`).
 
 **Prices (C-SRCH-01).** Each result carries `offer`, the cheapest way the hotel can host the stay:
 
@@ -222,6 +224,53 @@ There are no write endpoints for rates, policies or taxes yet: the local demo se
 (room only with free cancellation; breakfast, non-refundable, 10% less), a +20% Friday/Saturday rule, one date
 override and Vietnam's VAT on top.
 
+**Filters (C-SRCH-02).** All optional GET parameters; lists are repeated (`stars=4&stars=5`):
+
+| Parameter | Matches |
+|-----------|---------|
+| `name` | part of the hotel name, ignoring accents and case (`%` and `_` match only themselves) |
+| `stars` | any of these star ratings (1–5) |
+| `minGoogleRating`, `minUserRating` | at least this Google rating (0–5) / user rating (0–10) |
+| `accommodationTypes` | any of these codes: `hotel`, `resort`, `apartment`, `villa`, `hostel` |
+| `facilities` | all of these hotel facilities (`amenities` with scope `HOTEL`: `wifi`, `pool`, `parking`, ...) |
+| `maxDistanceM` | at most this many metres from the centre (`hotels.distance_to_center_m`) |
+| `boardTypes` | any of `RO`, `BB`, `HB`, `FB`, `AI` |
+| `cancellation` | `FREE` (free cancellation still possible for this stay) and/or `NON_REFUNDABLE` |
+| `bedTypes` | a room with any of `single`, `double`, `queen`, `king`, `twin` (`room_type_beds`) |
+| `roomFeatures` | a room with all of these features (`amenities` with scope `ROOM`: `balcony`, `sea_view`, ...) |
+| `minPrice`, `maxPrice` | price per night of the whole offer (all rooms), inclusive, in `currency` |
+| `currency` | ISO 4217 code prices are compared in; default: the selling currency of most listed hotels in the destination (for a hotel search, its own) |
+
+The first six describe the hotel and drop the hotels that don't match. Board type, cancellation, bed type and room
+features describe the room and its rate. They limit which rate plans and room types the offer may use, so with
+`boardTypes=BB` the card shows the cheapest breakfast offer, and a hotel without one is hidden. The price range then
+checks that offer: `total >= minPrice × nights` and `total <= maxPrice × nights`. A refundable rate whose free
+cancellation has already ended is neither `FREE` nor `NON_REFUNDABLE`. Hotels without a star rating, rating or
+distance never match those filters. Unknown codes match nothing. There is no currency conversion yet (C-SRCH-05):
+a hotel selling in another currency than `currency` never matches a price range.
+
+**Filter counts.** `GET /api/search/hotels/filters` takes the same parameters (without paging and sort). It answers
+every option of every filter with the number of hotels the list would show if that option were picked, so a client
+can show "4 stars (12)" and keep the selection in the URL. Each list is named after its query parameter (`stars`,
+`minGoogleRating`, `minUserRating`, `accommodationTypes`, `facilities`, `maxDistanceM`, `boardTypes`,
+`cancellation`, `bedTypes`, `roomFeatures`):
+
+- In an "any of" list (stars, accommodation types, board types, cancellation, bed types), a count ignores that
+  list's own selection: picking 5★ leaves the 4★ count as it was. Other filters still apply.
+- In an "all of" list (facilities, room features), a count is the current results that also have the option.
+- Numeric options count each fixed value on its own: Google 3.0/3.5/4.0/4.5, users 6/7/8/9, distance 1/3/5/10 km.
+- Board, cancellation, bed and room-feature counts price each option the way the list would, so they respect the
+  price range.
+- Every option is listed, even with 0 hotels. Reference options carry their `name`; facilities and room features
+  also have a `category`. `priceRange` holds the lowest and highest price per night among the results, ignoring
+  the price filter itself (null when none sells in `currency`).
+
+**Sorting (C-SRCH-03).** `sort=price` (cheapest offer first; hotels selling in another currency than `currency`
+come last), `sort=rating` (best user rating first among hotels with at least `app.search.rating-sort-min-reviews`
+reviews, 10 by default, then the others), or `sort=distance` (nearest first, unknown distance last). Any case works,
+and the direction is ignored. An unknown value or several sorts give 400. Without `sort` the order is the user-rating
+order above. A "recommended" sort is not implemented yet.
+
 **Popular destinations** are the ones an admin featured (`featuredRank`, lowest first), each with its best-rated
 listed hotels. While nothing is featured, the cities with the most hotels are shown. Clicking one runs the default
 search, which the client builds because only it knows the traveller's "tomorrow":
@@ -237,6 +286,8 @@ forget it). The same call labels a search opened from a shared URL.
 ```bash
 curl -s "$BASE/api/search/suggestions?q=da%20nang"
 curl -s "$BASE/api/search/hotels?destination=vn-da-nang&checkIn=2026-11-01&checkOut=2026-11-03&rooms=1&adults=2"
+curl -s "$BASE/api/search/hotels?destination=vn-da-nang&checkIn=2026-11-01&checkOut=2026-11-03&rooms=1&adults=2&facilities=pool&boardTypes=BB&sort=price"
+curl -s "$BASE/api/search/hotels/filters?destination=vn-da-nang&checkIn=2026-11-01&checkOut=2026-11-03&rooms=1&adults=2&maxPrice=1300000"
 curl -s "$BASE/api/destinations/popular"
 curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"Đà Nẵng","imageUrl":"https://example.com/da-nang.jpg","featuredRank":1}' \
@@ -244,7 +295,8 @@ curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applica
 ```
 
 **Demo data.** Under the `local` profile Flyway also runs `db/seed/R__demo_catalog.sql`: 9 fictional hotels in Đà
-Nẵng, Hồ Chí Minh, Hà Nội and Hội An (one inactive hotel in Huế), and those four cities featured. The `test` and
+Nẵng, Hồ Chí Minh, Hà Nội and Hội An (one inactive hotel in Huế), and those four cities featured. The hotels have
+distances to the centre and facilities, and their room types have beds and room features. The `test` and
 `prod` profiles never load it. `docker compose down -v` resets it.
 
 ## Tests
@@ -277,10 +329,15 @@ Nẵng, Hồ Chí Minh, Hà Nội and Hội An (one inactive hotel in Huế), an
 | `SearchControllerTest` | full app | accent-insensitive suggestions, half-typed words and typos in place names, escaped wildcards, availability (closed/sold-out nights, capacity, several rooms, children), validation |
 | `DestinationControllerTest` | full app | popular order and best hotels, default search for a clicked destination, lookup by slug |
 | `AdminDestinationControllerTest` | full app | ADMIN only, name-prefix list, update + validation, renamed country in its places' labels, sync on demand |
+| `SearchControllerFilterTest` | full app | each hotel filter, name matching and escaping, board/cancellation/bed/feature filters choosing the offer, price per night and currency, validation |
+| `SearchControllerSortTest` | full app | price (other currencies last), rating with the review minimum, distance, paging in sort order, unknown sorts |
+| `SearchControllerFilterCountsTest` | full app | "any of" vs "all of" counts, thresholds, re-priced offer options, every count equal to the list's total with that option, price range, option names, empty place |
 | `SearchControllerPricingTest` | full app | cheapest plan and room type, night price order (override, rule priority, base), closed nights and minimum stays, unsellable room types, cheapest room mix, tax flag, free-cancellation deadline, photos, paging |
 | `SearchCriteriaTest` | unit | date, length and guest rules; even split of guests per room |
 | `FreeCancellationTest` | unit | deadline from the policy's penalty hours in the hotel's zone, non-refundable, passed deadline, daylight saving |
-| `MoneyTest` | unit | minor units scaled by the currency's decimals |
+| `FreeCancellationSqlTest` | full app | the SQL function `free_cancellation_until()` gives the same deadline as `FreeCancellation` |
+| `HotelSortTest` | unit | reading `sort`: any case, direction ignored, unknown or several values rejected |
+| `MoneyTest` | unit | minor units scaled by the currency's decimals, and back |
 | `DestinationServiceImplTest` | unit | featured order, fallback to top cities, limits |
 
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
@@ -290,7 +347,7 @@ container, so the suite stays fast. Tests create their own data with unique emai
 `TestAuth.userToken` registers, verifies and signs in.
 Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, then call the destination sync
 themselves (the `test` profile never schedules it). `CatalogFixtures.roomType` also adds a sellable rate plan
-(`bareRoomType` adds none). Tax rules apply to a whole country, so tax tests use their own user-assigned country codes
+(`bareRoomType` adds none). `hotelAmenity`, `roomAmenity` and `bed` attach V6 reference rows. Tax rules apply to a whole country, so tax tests use their own user-assigned country codes
 (`XA`–`XZ`). Unit tests use Mockito and start no Spring context.
 
 `TestProjectApplication` (in `src/test`) runs the app against a Testcontainers database instead of Docker Compose.
@@ -317,8 +374,8 @@ src/main/java/com/company/project/
 │   └── bootstrap/                       first admin account on startup
 ├── product/                             sample feature: copy this shape
 │   └── controller/  model/  repository/  dto/  mapper/  services/ (+ impl/)
-├── hotel/                               hotel catalog read model: entities, HotelRepository (priced availability),
-│   └── model/  repository/ (+ impl/)    shared query fragments
+├── hotel/                               hotel catalog read model: entities, amenities, bed types, HotelRepository
+│   └── model/  repository/ (+ impl/)    (priced availability, filters, filter counts), shared query fragments
 ├── rate/                                rate plans, board types, cancellation policies (read model)
 │   └── model/  repository/ (+ impl/)
 ├── tax/                                 tax rules per country (read model)
@@ -326,14 +383,15 @@ src/main/java/com/company/project/
 ├── destination/                         destinations: sync, popular, lookup, admin curation
 │   ├── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
 │   └── sync/                            scheduled and on-startup destination sync
-└── search/                              homepage search: suggestions, hotel result list with prices
+└── search/                              homepage search: suggestions, result list with prices, filters, sorting
     └── controller/  config/  model/  dto/  mapper/  services/ (+ impl/)
 src/main/resources/
 ├── application.yml                      defaults for every profile
 ├── application-local.yml                local dev (the default profile): .env, Docker Compose, demo seed
 ├── application-prod.yml                 production overrides
 ├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions,
-│                                        V5 rates + taxes + night_price()
+│                                        V5 rates + taxes + night_price(), V6 amenities + beds +
+│                                        free_cancellation_until()
 └── db/seed/R__demo_catalog.sql          demo hotels, local profile only
 ```
 
@@ -412,7 +470,8 @@ Profiles: `local` is the default when none is set (reads `.env`, starts Docker C
 Access token lifetime is `app.jwt.access-token-ttl` (default `15m`) in `application.yml`. Account settings are
 `app.auth.*` there: `refresh-token-ttl` 1d, `remember-me-ttl` 30d, `email-verification-ttl` 24h,
 `password-reset-ttl` 30m, `email-cooldown` 1m, and `lockout` (`max-attempts` 5, `window` 15m, `duration` 15m). Search limits are `app.search.*`
-there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `max-children` 10).
+there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `max-children` 10,
+`rating-sort-min-reviews` 10).
 
 ## Production notes
 
@@ -454,15 +513,19 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 - **One extra database lookup per authenticated request** (the session check that makes sign-out immediate).
 - **Optimistic locking only guards concurrent transactions.** Clients don't send `version`, so a stale edit
   from a client can still overwrite newer data.
-- **Hotel search has no sorting, filters or currency conversion yet** (C-SRCH-02/03/05). `sort` is ignored, and prices
-  are in the hotel's own currency. Guests are split evenly over the rooms, so a hotel that could only host an uneven
+- **Hotel search has no currency conversion yet** (C-SRCH-05). Prices are in the hotel's own currency; the price
+  filter, price sort and price range compare one currency (`currency`). There is no "recommended" sort (C-SRCH-03). Guests are split evenly over the rooms, so a hotel that could only host an uneven
   split (3 adults in a double + a single) is not shown.
 - **Search prices are room prices only.** They don't change with the number of guests or children's ages, tax is a
   yes/no flag (amounts come with checkout, C-BOOK-02), and there are no discounts or promotions. Rates, policies and
   taxes have no write endpoints yet: enter them with SQL or the demo seed.
 - **`night_price()` runs once per rate plan and night of every candidate hotel.** That's quick for a city. A
-  country-wide search over thousands of hotels may need a precomputed price calendar.
-- **A hotel's `timezone` must be a valid IANA zone.** Search reads it to place the free-cancellation deadline, and an
+  country-wide search over thousands of hotels may need a precomputed price calendar. The filter counts price every
+  listed hotel of the place (hotel filters can't prune them, since a hotel failing one filter still counts for that
+  filter's options) and fill the rooms once per board, cancellation, bed and room-feature option. Measured only on
+  the 8-hotel demo seed so far (about 0.1 s warm for both endpoints).
+- **A hotel's `timezone` must be a valid IANA zone.** Search reads it to place the free-cancellation deadline (in Java
+  for the cards, in the SQL function `free_cancellation_until()` for the `cancellation` filter), and an
   invalid value fails the request with a 500. The hotel write API (O-HOTEL-01) must validate it.
 - **Public search endpoints still reject a bad token.** A request to `/api/search/**` or `/api/destinations/**` with
   an expired or invalid `Authorization` header gets 401; clients should drop expired tokens. The public account

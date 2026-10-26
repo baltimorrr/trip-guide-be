@@ -11,9 +11,10 @@ notes and the "Adding a feature" checklist.
 
 `USER_STORIES.md` and `DATABASE-SCHEMA.md` (dbdiagram.io DBML, 54 tables) describe the Hotel Booking Platform this base
 is meant to become. Implemented so far: the homepage stories C-HOME-01/02/03 (`search/`, `destination/`, migration V3),
-the priced result list C-SRCH-01 (`rate/`, `tax/`, migration V5), the admin slice of A-CONT-01 that curates
-destinations, and the email-account stories C-AUTH-01/02/04/05/06 (`auth/`, `user/`, migration V4; emails are only
-logged). The schema doc says it was generated from a `schema.sql` that is not in this repo.
+the priced result list C-SRCH-01 (`rate/`, `tax/`, migration V5), its filters, filter counts and sorts C-SRCH-02/03
+(migration V6: amenities, bed types, `free_cancellation_until()`; the "recommended" sort is postponed), the admin
+slice of A-CONT-01 that curates destinations, and the email-account stories C-AUTH-01/02/04/05/06 (`auth/`, `user/`,
+migration V4; emails are only logged). The schema doc says it was generated from a `schema.sql` that is not in this repo.
 
 **Decided (2026-10-21): new tables keep the schema doc's table and column names but follow this project's
 conventions.** That means identity `bigint` ids, a `version` column, and `created_at`/`updated_at` set by auditing.
@@ -146,6 +147,7 @@ The rest works as follows:
   - the priced availability check in `HotelRepositoryImpl`: one row per night, `night_price()` per rate plan and
     night, `distinct on` for each room type's cheapest plan, and a running sum that fills the rooms from the cheapest
     room type up. It returns ids, quantities and prices only; JPQL loads the cards, photos and rate descriptions.
+    The same CTE chain serves the result list and the filter counts (see the filters bullet below).
   - the bulk `ON CONFLICT` insert, the spelling refresh (both `mode()`) and the advisory lock in
     `DestinationSyncRepositoryImpl`.
 
@@ -167,6 +169,23 @@ The rest works as follows:
   plan in the hotel's currency can sell every night. Hibernate's default `TIME` mapping shifts values by the JVM's
   zone (because `jdbc.time_zone` is UTC), so wall-clock times such as `Hotel.checkInFrom` use
   `@JdbcType(LocalTimeJdbcType.class)`.
+- Filters (C-SRCH-02) are predicates over the rows of that chain, with fixed aliases: `c` = `hotel_rows` (hotel
+  columns plus a `facilities` code array), `o` = `offers` (rate offer plus board code, cancellation and the room
+  type's bed and feature code arrays), `v` = `available`/`results`. Hotel predicates narrow `candidate_hotels`
+  before pricing. Offer predicates narrow `scoped_offers`, so the offer is the cheapest mix of what is left. The fill
+  (`cheapest_rates` → `available`) is partitioned by a scope (`facet`, `facet_value`): the list uses `'ALL'`, and the
+  counts add one scope per board/cancellation/bed/room-feature option. They also drop the hotel predicates from the
+  candidates, because a hotel failing one filter still counts for that filter's options.
+  `SearchControllerFilterCountsTest#everyCountMatchesTheResultListWithThatOptionPicked` keeps the two paths equal.
+- `HotelFilterSql` renders only the active filters and collects their parameters as it renders them. An empty list
+  would become `in ()`, and Hibernate rejects binding a parameter the text doesn't use. That's also why `results`
+  always selects `:priceCurrency` (`in_price_currency`). Hibernate expands a list parameter inside `array[...]` into a
+  row value (`array[(?, ?)]`), so array columns are matched with `unnest(...) ... in (:list)`, never `array[:list]`.
+- The SQL function `free_cancellation_until()` (V6) is the twin of `FreeCancellation.until` (the cancellation filter
+  uses one, the cards the other); change both. `FreeCancellationSqlTest` compares them. The service captures one
+  `now` and passes it to both.
+- Price filter and sort compare one currency (`HotelFilter.priceCurrency`: the request's `currency`, else the most
+  common selling currency of the destination's listed hotels) until currency conversion exists (C-SRCH-05).
 - Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels).
 
 ## Tests
@@ -186,7 +205,10 @@ The rest works as follows:
   (`bareRoomType` none). Tax rules apply to a whole country, so tax tests use their own `XA`–`XZ` codes, never `VN`.
   Give every place and hotel a `uniqueSuffix()`, call `DestinationSyncService.sync()` yourself (the `test` profile
   disables the schedule), and assert only on your own slugs. Featured and popular lists are shared by all tests, so
-  assert relative order, not positions.
+  assert relative order, not positions. `HotelBuilder` sets stars, type, distance and currency; `hotelAmenity`,
+  `roomAmenity` and `bed` link V6 reference rows. A hotel in another currency needs `bareRoomType` plus a
+  `ratePlan(...).currency(...)` in that currency.
+- MockMvc encodes `%` in a URI template again; send text with `%` through `.param(...)`.
 - JDBC reads `smallint` back as `Integer`, not `Short`.
 - A `@DataJpaTest` needs `@AutoConfigureTestDatabase(replace = NONE)`, `@Import({TestcontainersConfiguration.class,
   JpaAuditingConfig.class})` and `@ActiveProfiles("test")`. Without the auditing import, inserts fail on the not-null
@@ -212,8 +234,8 @@ The rest works as follows:
 - List endpoints return `PageResponse.from(page)`, never a raw `Page`. The page size is capped at 100 globally.
 - README "Known limitations" lists gaps left in on purpose: emails are only logged, no per-IP sign-in rate limiting
   (accounts lock instead), registration's 409 reveals existing emails, concurrent refreshes sign a device out. It also
-  covers the limits of the hotel search (no sort/filters/currency conversion, room prices only with a tax flag, even
-  split of guests per room).
+  covers the limits of the hotel search (no currency conversion or "recommended" sort, room prices only with a tax
+  flag, even split of guests per room, the cost of the filter counts).
 - JPQL bulk updates bypass auditing and versioning: write `update versioned X` and set `updatedAt` yourself (see
   `UserSessionRepositoryImpl`).
 - Public endpoints need a `permitAll` matcher in `SecurityConfig` and an empty `@SecurityRequirements` on the

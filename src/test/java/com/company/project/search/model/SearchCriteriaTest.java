@@ -16,7 +16,7 @@ class SearchCriteriaTest {
 
 	static final LocalDate TODAY = LocalDate.of(2026, 10, 21);
 
-	static final SearchProperties LIMITS = new SearchProperties(30, 365, 8, 30, 10);
+	static final SearchProperties LIMITS = new SearchProperties(30, 365, 8, 30, 10, 10);
 
 	@Test
 	void acceptsAValidStayAndSplitsGuestsEvenly() {

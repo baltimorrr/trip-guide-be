@@ -15,4 +15,12 @@ class MoneyTest {
 		assertThat(Money.ofMinor(0, "USD").amount()).isEqualByComparingTo("0");
 	}
 
+	@Test
+	void convertsMajorUnitsToWholeMinorUnits() {
+		assertThat(Money.toMinor(new BigDecimal("2400000"), "VND")).isEqualTo(2_400_000);
+		assertThat(Money.toMinor(new BigDecimal("129.5"), "USD")).isEqualTo(12_950);
+		assertThat(Money.toMinor(new BigDecimal("129.505"), "USD")).isEqualTo(12_951);
+		assertThat(Money.toMinor(new BigDecimal("0.4"), "VND")).isZero();
+	}
+
 }

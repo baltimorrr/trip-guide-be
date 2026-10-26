@@ -68,6 +68,8 @@ app:
     max-rooms: 8
     max-adults: 30
     max-children: 10
+    # Hotels with fewer user reviews come after the others when results are sorted by rating.
+    rating-sort-min-reviews: 10
   destinations:
     sync:
       # Rebuilds destinations from listed hotels' addresses. Spring cron (six fields); "-" disables it.

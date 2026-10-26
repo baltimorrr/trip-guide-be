@@ -142,3 +142,55 @@ begin
     select 'VN', 'VAT', 'PERCENT', 10, false, now(), now()
     where not exists (select 1 from tax_rules where country_code = 'VN' and name = 'VAT');
 end $$;
+
+-- Filter demo (C-SRCH-02): distance to the city centre, hotel facilities, and the beds and features of each demo
+-- room type. Deluxe Double has a king bed in 4-5 star hotels and a double bed elsewhere; Family Suite has twin and
+-- queen beds, a balcony, and a sea view by the beach.
+update hotels h
+set distance_to_center_m = v.metres
+from (values ('song-han-riverside-demo', 600), ('han-market-boutique-demo', 300),
+             ('my-khe-beach-resort-demo', 4200), ('son-tra-sea-view-demo', 3500),
+             ('saigon-central-demo', 400), ('ben-thanh-hostel-demo', 900),
+             ('hoan-kiem-lake-demo', 250), ('hoi-an-lantern-villa-demo', 1200),
+             ('hue-imperial-demo', 800)) as v(slug, metres)
+where h.slug = v.slug and h.distance_to_center_m is distinct from v.metres;
+
+insert into hotel_amenities (hotel_id, amenity_id)
+select h.id, a.id
+from (values ('song-han-riverside-demo', '{wifi,parking,front_desk_24h,restaurant,bar,fitness}'),
+             ('han-market-boutique-demo', '{wifi,front_desk_24h}'),
+             ('my-khe-beach-resort-demo', '{wifi,parking,airport_shuttle,restaurant,bar,pool,spa,fitness,beach_access}'),
+             ('son-tra-sea-view-demo', '{wifi,parking,pool,beach_access,pets_allowed}'),
+             ('saigon-central-demo', '{wifi,front_desk_24h,restaurant,bar,pool,fitness,airport_shuttle}'),
+             ('ben-thanh-hostel-demo', '{wifi,bar,front_desk_24h}'),
+             ('hoan-kiem-lake-demo', '{wifi,front_desk_24h,restaurant,spa}'),
+             ('hoi-an-lantern-villa-demo', '{wifi,parking,pool,pets_allowed}'),
+             ('hue-imperial-demo', '{wifi,parking}')) as v(slug, codes)
+join hotels h on h.slug = v.slug
+join amenities a on a.code = any (cast(v.codes as text[]))
+on conflict (hotel_id, amenity_id) do nothing;
+
+insert into room_type_beds (room_type_id, bed_type_id, quantity)
+select rt.id, b.id, v.quantity
+from room_types rt
+join hotels h on h.id = rt.hotel_id
+join (values ('Deluxe Double', true, 'king', 1), ('Deluxe Double', false, 'double', 1),
+             ('Family Suite', true, 'twin', 1), ('Family Suite', true, 'queen', 1),
+             ('Family Suite', false, 'twin', 1), ('Family Suite', false, 'queen', 1))
+    as v(room_type, upscale, bed, quantity)
+    on v.room_type = rt.name and v.upscale = (h.star_rating >= 4)
+join bed_types b on b.code = v.bed
+where h.slug like '%-demo'
+on conflict (room_type_id, bed_type_id) do nothing;
+
+insert into room_type_amenities (room_type_id, amenity_id)
+select rt.id, a.id
+from room_types rt
+join hotels h on h.id = rt.hotel_id
+join amenities a on a.code = any (case rt.name
+        when 'Family Suite' then case when h.slug in ('my-khe-beach-resort-demo', 'son-tra-sea-view-demo')
+                                      then '{air_conditioning,balcony,sea_view,bathtub,kitchen}'::text[]
+                                      else '{air_conditioning,balcony,city_view,bathtub}'::text[] end
+        else '{air_conditioning,minibar,work_desk}'::text[] end)
+where h.slug like '%-demo'
+on conflict (room_type_id, amenity_id) do nothing;

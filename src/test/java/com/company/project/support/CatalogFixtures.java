@@ -98,6 +98,37 @@ public final class CatalogFixtures {
 		jdbc.sql("update hotels set status = :status where id = :id").param("status", status).param("id", hotelId).update();
 	}
 
+	/** Links a facility seeded by V6 ({@code wifi}, {@code pool}...) to the hotel. */
+	public void hotelAmenity(long hotelId, String code) {
+		jdbc.sql("""
+				insert into hotel_amenities (hotel_id, amenity_id)
+				values (:hotelId, (select id from amenities where code = :code))""")
+			.param("hotelId", hotelId)
+			.param("code", code)
+			.update();
+	}
+
+	/** Links a room feature seeded by V6 ({@code balcony}, {@code sea_view}...) to the room type. */
+	public void roomAmenity(long roomTypeId, String code) {
+		jdbc.sql("""
+				insert into room_type_amenities (room_type_id, amenity_id)
+				values (:roomTypeId, (select id from amenities where code = :code))""")
+			.param("roomTypeId", roomTypeId)
+			.param("code", code)
+			.update();
+	}
+
+	/** Gives the room type {@code quantity} beds of a type seeded by V6 ({@code single}, {@code king}...). */
+	public void bed(long roomTypeId, String code, int quantity) {
+		jdbc.sql("""
+				insert into room_type_beds (room_type_id, bed_type_id, quantity)
+				values (:roomTypeId, (select id from bed_types where code = :code), :quantity)""")
+			.param("roomTypeId", roomTypeId)
+			.param("code", code)
+			.param("quantity", quantity)
+			.update();
+	}
+
 	public RatePlanBuilder ratePlan(long roomTypeId) {
 		return new RatePlanBuilder(roomTypeId);
 	}
@@ -315,10 +346,21 @@ public final class CatalogFixtures {
 
 	}
 
-	/** Defaults: ACTIVE hotel in Vietnam without province, district, ward or ratings. */
+	/**
+	 * Defaults: ACTIVE {@code hotel} in Vietnam selling in VND, without province, district, ward, stars, ratings or
+	 * distance to the centre.
+	 */
 	public final class HotelBuilder {
 
 		private final String name;
+
+		private String accommodationType = "hotel";
+
+		private Integer starRating;
+
+		private Integer distanceToCenterM;
+
+		private String currency = "VND";
 
 		private String countryCode = "VN";
 
@@ -383,6 +425,28 @@ public final class CatalogFixtures {
 			return this;
 		}
 
+		/** An accommodation type code seeded by V3: hotel, resort, apartment, villa, hostel. */
+		public HotelBuilder type(String code) {
+			this.accommodationType = code;
+			return this;
+		}
+
+		public HotelBuilder stars(int stars) {
+			this.starRating = stars;
+			return this;
+		}
+
+		public HotelBuilder distance(int metres) {
+			this.distanceToCenterM = metres;
+			return this;
+		}
+
+		/** Selling currency; search only sells rate plans in it, so build those with the same currency. */
+		public HotelBuilder currency(String currency) {
+			this.currency = currency;
+			return this;
+		}
+
 		public CreatedHotel create() {
 			long partnerId = jdbc.sql("""
 					insert into partners (legal_name, contact_email, status, created_at, updated_at)
@@ -405,20 +469,24 @@ public final class CatalogFixtures {
 				.single();
 			String slug = "hotel-" + uniqueSuffix();
 			long hotelId = jdbc.sql("""
-					insert into hotels (partner_id, accommodation_type_id, name, slug, address_id, user_rating_avg,
-					                    user_rating_count, google_rating, currency, timezone, status, created_at,
-					                    updated_at)
-					values (:partnerId, (select id from accommodation_types where code = 'hotel'), :name, :slug,
-					        :addressId, :userRatingAvg, :userRatingCount, :googleRating, 'VND', 'Asia/Ho_Chi_Minh',
-					        :status, now(), now())
+					insert into hotels (partner_id, accommodation_type_id, name, slug, star_rating, address_id,
+					                    distance_to_center_m, user_rating_avg, user_rating_count, google_rating, currency,
+					                    timezone, status, created_at, updated_at)
+					values (:partnerId, (select id from accommodation_types where code = :type), :name, :slug, :stars,
+					        :addressId, :distance, :userRatingAvg, :userRatingCount, :googleRating, :currency,
+					        'Asia/Ho_Chi_Minh', :status, now(), now())
 					returning id""")
 				.param("partnerId", partnerId)
+				.param("type", accommodationType)
 				.param("name", name)
 				.param("slug", slug)
+				.param("stars", starRating)
 				.param("addressId", addressId)
+				.param("distance", distanceToCenterM)
 				.param("userRatingAvg", userRatingAvg)
 				.param("userRatingCount", userRatingCount)
 				.param("googleRating", googleRating)
+				.param("currency", currency)
 				.param("status", status)
 				.query(Long.class)
 				.single();

@@ -2,13 +2,22 @@ package com.company.project.hotel.repository.impl;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
+import com.company.project.hotel.model.AmenityScope;
+import com.company.project.hotel.repository.FilterCountsView;
+import com.company.project.hotel.repository.FilterGroup;
+import com.company.project.hotel.repository.FilterOptionView;
 import com.company.project.hotel.repository.HotelCardView;
+import com.company.project.hotel.repository.HotelFilter;
 import com.company.project.hotel.repository.HotelJpql;
 import com.company.project.hotel.repository.HotelOfferView;
+import com.company.project.hotel.repository.HotelOrder;
 import com.company.project.hotel.repository.HotelPhotoView;
 import com.company.project.hotel.repository.HotelRepositoryCustom;
 import com.company.project.hotel.repository.HotelSql;
@@ -29,8 +38,14 @@ import org.springframework.data.support.PageableExecutionUtils;
  * JPQL everywhere except the priced availability check. That one is native SQL because it needs one row per night
  * of the stay ({@code generate_series}), where a night without an inventory row counts as the room type's default
  * capacity; the SQL function {@code night_price()} per rate plan and night; one cheapest rate plan per room type
- * ({@code distinct on}); and a running sum of free rooms to fill the requested rooms from the cheapest room type up.
- * It returns ids, quantities and prices only; JPQL loads the cards and the names.
+ * ({@code distinct on}); a running sum of free rooms to fill the requested rooms from the cheapest room type up; and
+ * array columns of facilities, beds and room features for the filters. It returns ids, quantities and prices only;
+ * JPQL loads the cards and the names.
+ * <p>
+ * Filters ({@link HotelFilterSql}) are predicates over the rows of that query, with fixed aliases: {@code c} = a
+ * {@code hotel_rows} row, {@code o} = an {@code offers} row, {@code v} = an {@code available} or {@code results} row,
+ * {@code h} = hotels. Hotel filters narrow {@code candidate_hotels} before anything is priced; offer filters narrow
+ * {@code scoped_offers}, so the offer is the cheapest mix of the rate plans left.
  * <p>
  * LIKE on typed text says {@code escape '\'}: Hibernate otherwise renders {@code escape ''}, which would turn
  * the caller's backslash escapes into literal characters.
@@ -56,31 +71,53 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 			+ "\n  and " + HotelJpql.ADDRESS_IN_DESTINATION
 			+ "\norder by h.userRatingAvg desc nulls last, h.googleRating desc nulls last, h.id";
 
-	private static final String CANDIDATES_IN_DESTINATION = """
-			with candidate_hotels as (
-			    select h.id
-			    from hotels h
-			    join addresses a on a.id = h.address_id
-			    join destinations d on d.id = :locationId
-			    where\s""" + HotelSql.HOTEL_LISTED + " and " + HotelSql.ADDRESS_IN_DESTINATION + "\n),\n";
+	private static final String MAIN_CURRENCY_IN_DESTINATION = """
+			select h.currency
+			from Hotel h
+			join h.address a
+			join Destination d on d.id = :destinationId
+			where\s""" + HotelJpql.HOTEL_LISTED + "\n  and " + HotelJpql.ADDRESS_IN_DESTINATION + """
 
-	private static final String CANDIDATE_HOTEL = """
-			with candidate_hotels as (
-			    select h.id from hotels h where h.id = :locationId and\s""" + HotelSql.HOTEL_LISTED + "\n),\n";
+			group by h.currency
+			order by count(h) desc, h.currency""";
 
 	/**
-	 * Candidate hotels that can sell {@code :rooms} rooms for every night of {@code [:checkIn, :checkOut)}, and how.
+	 * {@code hotel_rows}: the listed hotels of the location with what the hotel filters read, facilities as an array
+	 * of codes. Append the location condition, the name condition and {@link #HOTEL_ROWS_END}.
+	 */
+	private static final String HOTEL_ROWS = """
+			with hotel_rows as (
+			    select h.id, h.star_rating, h.google_rating, h.user_rating_avg, h.distance_to_center_m,
+			           t.code as accommodation_type,
+			           array(select cast(am.code as text)
+			                 from hotel_amenities ha
+			                 join amenities am on am.id = ha.amenity_id
+			                 where ha.hotel_id = h.id and am.scope = 'HOTEL') as facilities
+			    from hotels h
+			    join addresses a on a.id = h.address_id
+			    join accommodation_types t on t.id = h.accommodation_type_id
+			""";
+
+	private static final String IN_DESTINATION = "    join destinations d on d.id = :locationId\n    where "
+			+ HotelSql.HOTEL_LISTED + " and " + HotelSql.ADDRESS_IN_DESTINATION;
+
+	private static final String IS_HOTEL = "    where h.id = :locationId and " + HotelSql.HOTEL_LISTED;
+
+	private static final String HOTEL_ROWS_END = "\n),\n";
+
+	/**
+	 * Rooms and rate plans of {@code candidate_hotels} that can sell {@code :rooms} rooms for every night of
+	 * {@code [:checkIn, :checkOut)}, and what the offer filters read.
 	 * <ul>
 	 * <li>{@code free_rooms}: fitting room types and their fewest free rooms on any night. Children may also use
 	 * places adults leave free.</li>
 	 * <li>{@code rate_offers}: their active rate plans in the hotel's currency, priced for the stay, without a closed
 	 * night and with the stay at least as long as the longest minimum stay of its nights.</li>
-	 * <li>{@code cheapest_rates}: the cheapest of those per room type (ties: lowest rate plan id).</li>
-	 * <li>{@code picked}: rooms taken from the cheapest room type up (ties: lowest room type id) until
-	 * {@code :rooms} are covered; {@code available}: the hotels where they are.</li>
+	 * <li>{@code offers}: those plus board code, cancellation ({@code FREE} while free cancellation is still possible
+	 * at {@code :now}, {@code NON_REFUNDABLE}, else null) and the room type's bed and feature codes.</li>
 	 * </ul>
 	 */
-	private static final String PRICED_AVAILABILITY = """
+	private static final String PRICED_OFFERS = """
 			nights as (
 			    select cast(generate_series(cast(:checkIn as date), cast(:checkOut as date) - 1, interval '1 day') as date)
 			           as stay_date
@@ -113,47 +150,166 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 			    having not bool_or(coalesce(pp.is_closed, false))
 			       and max(coalesce(pp.min_nights, rp.min_nights)) <= :nights
 			),
+			offers as (
+			    select r.*, b.code as board_type,
+			           case when free_cancellation_until(cp.id, cast(:checkIn as date), h.check_in_from, h.timezone) > :now
+			                then 'FREE'
+			                when not cp.is_refundable then 'NON_REFUNDABLE' end as cancellation,
+			           array(select cast(bt.code as text)
+			                 from room_type_beds rb
+			                 join bed_types bt on bt.id = rb.bed_type_id
+			                 where rb.room_type_id = r.room_type_id) as bed_types,
+			           array(select cast(am.code as text)
+			                 from room_type_amenities ra
+			                 join amenities am on am.id = ra.amenity_id
+			                 where ra.room_type_id = r.room_type_id and am.scope = 'ROOM') as room_features
+			    from rate_offers r
+			    join rate_plans rp on rp.id = r.rate_plan_id
+			    join board_types b on b.id = rp.board_type_id
+			    join cancellation_policies cp on cp.id = rp.cancellation_policy_id
+			    join hotels h on h.id = r.hotel_id
+			),
+			""";
+
+	/** Opens {@code scoped_offers} with the offers the results use; append the offer predicates and {@code ")"}. */
+	private static final String ALL_SCOPE = """
+			scoped_offers as (
+			    select 'ALL' as facet, '' as facet_value, o.hotel_id, o.room_type_id, o.free, o.rate_plan_id, o.currency,
+			           o.stay_price
+			    from offers o
+			    where\s""";
+
+	/**
+	 * The cheapest offer of each hotel within each scope of {@code scoped_offers} ({@code facet}, {@code facet_value}):
+	 * the results use the single scope {@code 'ALL'}.
+	 * <ul>
+	 * <li>{@code cheapest_rates}: the cheapest rate plan per room type (ties: lowest rate plan id).</li>
+	 * <li>{@code picked}: rooms taken from the cheapest room type up (ties: lowest room type id) until {@code :rooms}
+	 * are covered.</li>
+	 * <li>{@code available}: the hotels where they are, with the offer's total for the stay.</li>
+	 * </ul>
+	 */
+	private static final String SCOPED_FILL = """
+			,
 			cheapest_rates as (
-			    select distinct on (room_type_id) hotel_id, room_type_id, free, rate_plan_id, currency, stay_price
-			    from rate_offers
-			    order by room_type_id, stay_price, rate_plan_id
+			    select distinct on (facet, facet_value, room_type_id)
+			           facet, facet_value, hotel_id, room_type_id, free, rate_plan_id, currency, stay_price
+			    from scoped_offers
+			    order by facet, facet_value, room_type_id, stay_price, rate_plan_id
 			),
 			filled as (
-			    select c.*, sum(free) over (partition by hotel_id order by stay_price, room_type_id
+			    select c.*, sum(free) over (partition by facet, facet_value, hotel_id order by stay_price, room_type_id
 			                                rows unbounded preceding) - free as rooms_before
 			    from cheapest_rates c
 			),
 			picked as (
-			    select hotel_id, room_type_id, rate_plan_id, currency, stay_price,
+			    select facet, facet_value, hotel_id, room_type_id, rate_plan_id, currency, stay_price,
 			           least(free, :rooms - rooms_before) as quantity
 			    from filled
 			    where rooms_before < :rooms
 			),
 			available as (
-			    select hotel_id from picked group by hotel_id having sum(quantity) >= :rooms
+			    select facet, facet_value, hotel_id, min(currency) as currency,
+			           cast(sum(quantity * stay_price) as bigint) as total
+			    from picked
+			    group by facet, facet_value, hotel_id
+			    having sum(quantity) >= :rooms
 			)
 			""";
 
 	/**
-	 * The offer lines of one page of available hotels: best user rating first, the id making the order stable
-	 * across pages; within a hotel, cheapest line first.
+	 * {@code results}: the hotels the list shows, and whether each sells in the price currency (the price sort lists
+	 * those first). Append the price predicate and {@code ")"}.
+	 */
+	private static final String RESULTS = """
+			, results as (
+			    select v.hotel_id, v.currency, v.total, v.currency = :priceCurrency as in_price_currency
+			    from available v
+			    where v.facet = 'ALL' and\s""";
+
+	/**
+	 * The offer lines of one page of results in the requested order (the hotel id keeps it stable across pages);
+	 * within a hotel, cheapest line first. Append the order by items and {@link #PAGE_LINES_END}.
 	 */
 	private static final String PAGE_LINES = """
-			, page as (
-			    select h.id,
-			           row_number() over (order by h.user_rating_avg desc nulls last, h.user_rating_count desc, h.id)
-			           as position
-			    from hotels h
-			    join available v on v.hotel_id = h.id
+			),
+			page as (
+			    select h.id, row_number() over (order by\s""";
+
+	private static final String PAGE_LINES_END = """
+			) as position
+			    from results v
+			    join hotels h on h.id = v.hotel_id
 			    order by position
 			    limit :limit offset :offset
 			)
 			select p.hotel_id, p.room_type_id, p.rate_plan_id, p.quantity, p.stay_price, p.currency
 			from picked p
 			join page on page.id = p.hotel_id
+			where p.facet = 'ALL'
 			order by page.position, p.stay_price, p.room_type_id""";
 
-	private static final String COUNT_AVAILABLE = "select count(*) from available";
+	private static final String COUNT_RESULTS = ")\nselect count(*) from results";
+
+	/**
+	 * One more scope of {@code scoped_offers}: the offers an option of an offer filter allows, with the other offer
+	 * filters. Arguments: group name, option value expression, extra join, predicates.
+	 */
+	private static final String OPTION_SCOPE = """
+
+			    union all
+			    select '%1$s', %2$s, o.hotel_id, o.room_type_id, o.free, o.rate_plan_id, o.currency, o.stay_price
+			    from offers o%3$s
+			    where %4$s""";
+
+	/**
+	 * The final selects of the filter counts, each a {@code union all} part giving {@code (facet, facet_value,
+	 * hotels, min_total, max_total)} over the available offers {@code v} of the hotels {@code c}. Every part applies
+	 * the price predicate and the hotel predicates its group is counted against (arguments in that order).
+	 */
+	private static final String COUNT_BY_COLUMN = """
+			select '%1$s', cast(%2$s as text), count(*), cast(null as bigint), cast(null as bigint)
+			from available v
+			join hotel_rows c on c.id = v.hotel_id
+			where v.facet = 'ALL' and %2$s is not null and %3$s and %4$s
+			group by %2$s""";
+
+	/** Hotels at or within each fixed value ({@code t.threshold}) of a numeric filter. */
+	private static final String COUNT_BY_THRESHOLD = """
+			select '%1$s', cast(t.threshold as text), count(*), cast(null as bigint), cast(null as bigint)
+			from available v
+			join hotel_rows c on c.id = v.hotel_id
+			cross join unnest(array[%2$s]) as t(threshold)
+			where v.facet = 'ALL' and %3$s and %4$s and %5$s
+			group by t.threshold""";
+
+	private static final String COUNT_FACILITIES = """
+			select 'FACILITIES', opt.code, count(*), cast(null as bigint), cast(null as bigint)
+			from available v
+			join hotel_rows c on c.id = v.hotel_id
+			cross join unnest(c.facilities) as opt(code)
+			where v.facet = 'ALL' and %1$s and %2$s
+			group by opt.code""";
+
+	private static final String COUNT_OFFER_OPTIONS = """
+			select v.facet, v.facet_value, count(*), cast(null as bigint), cast(null as bigint)
+			from available v
+			join hotel_rows c on c.id = v.hotel_id
+			where v.facet <> 'ALL' and %1$s and %2$s
+			group by v.facet, v.facet_value""";
+
+	/** The offer totals of the results without the price filter, in the price currency. */
+	private static final String PRICE_RANGE = """
+			select 'PRICE', '', count(*), min(v.total), max(v.total)
+			from available v
+			join hotel_rows c on c.id = v.hotel_id
+			where v.facet = 'ALL' and v.currency = :priceCurrency and %1$s""";
+
+	private static final String FACILITY_OPTIONS = """
+			select new com.company.project.hotel.repository.FilterOptionView(a.code, a.name, a.groupName)
+			from Amenity a
+			where a.scope = :scope
+			order by a.groupName, a.name""";
 
 	private static final String HOTEL_PHOTOS = """
 			select new com.company.project.hotel.repository.HotelPhotoView(p.hotel.id, p.url)
@@ -190,21 +346,77 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 	}
 
 	@Override
-	public Page<HotelOfferView> findAvailableInDestination(long destinationId, StayRequirement stay,
-			Pageable pageable) {
-		return availableOffers(CANDIDATES_IN_DESTINATION, destinationId, stay, pageable);
+	public Optional<String> findMainCurrencyInDestination(long destinationId) {
+		return entityManager.createQuery(MAIN_CURRENCY_IN_DESTINATION, String.class)
+			.setParameter("destinationId", destinationId)
+			.setMaxResults(1)
+			.getResultStream()
+			.findFirst();
 	}
 
 	@Override
-	public Page<HotelOfferView> findAvailableHotel(long hotelId, StayRequirement stay, Pageable pageable) {
-		return availableOffers(CANDIDATE_HOTEL, hotelId, stay, pageable);
+	public Page<HotelOfferView> findAvailableInDestination(long destinationId, StayRequirement stay,
+			HotelFilter filter, HotelOrder order, Pageable pageable) {
+		return availableOffers(IN_DESTINATION, destinationId, stay, filter, order, pageable);
+	}
+
+	@Override
+	public Page<HotelOfferView> findAvailableHotel(long hotelId, StayRequirement stay, HotelFilter filter,
+			HotelOrder order, Pageable pageable) {
+		return availableOffers(IS_HOTEL, hotelId, stay, filter, order, pageable);
+	}
+
+	@Override
+	public FilterCountsView findFilterCountsInDestination(long destinationId, StayRequirement stay, HotelFilter filter) {
+		return filterCounts(IN_DESTINATION, destinationId, stay, filter);
+	}
+
+	@Override
+	public FilterCountsView findFilterCountsForHotel(long hotelId, StayRequirement stay, HotelFilter filter) {
+		return filterCounts(IS_HOTEL, hotelId, stay, filter);
+	}
+
+	@Override
+	public Map<FilterGroup, List<FilterOptionView>> findFilterOptions() {
+		Map<FilterGroup, List<FilterOptionView>> options = new EnumMap<>(FilterGroup.class);
+		options.put(FilterGroup.ACCOMMODATION_TYPE, entityManager.createQuery("""
+				select new com.company.project.hotel.repository.FilterOptionView(t.code, t.name)
+				from AccommodationType t order by t.id""", FilterOptionView.class).getResultList());
+		options.put(FilterGroup.FACILITIES, entityManager.createQuery(FACILITY_OPTIONS, FilterOptionView.class)
+			.setParameter("scope", AmenityScope.HOTEL)
+			.getResultList());
+		options.put(FilterGroup.BOARD_TYPE, entityManager.createQuery("""
+				select new com.company.project.hotel.repository.FilterOptionView(b.code, b.name)
+				from BoardType b order by b.id""", FilterOptionView.class).getResultList());
+		options.put(FilterGroup.BED_TYPE, entityManager.createQuery("""
+				select new com.company.project.hotel.repository.FilterOptionView(b.code, b.name)
+				from BedType b order by b.id""", FilterOptionView.class).getResultList());
+		options.put(FilterGroup.ROOM_FEATURES, entityManager.createQuery(FACILITY_OPTIONS, FilterOptionView.class)
+			.setParameter("scope", AmenityScope.ROOM)
+			.getResultList());
+		return options;
+	}
+
+	/**
+	 * {@code hotel_rows} through {@code available}: the candidates are the hotel rows passing
+	 * {@code candidatePredicates}, and {@code scoped_offers} holds the results' scope plus {@code optionScopes}.
+	 */
+	private static String scopedAvailability(String location, HotelFilterSql filters, String candidatePredicates,
+			String optionScopes) {
+		return HOTEL_ROWS + location + filters.nameCondition() + HOTEL_ROWS_END
+				+ "candidate_hotels as (select c.id from hotel_rows c where " + candidatePredicates + "),\n"
+				+ PRICED_OFFERS + ALL_SCOPE + filters.offerPredicates() + optionScopes + ")" + SCOPED_FILL;
 	}
 
 	@SuppressWarnings("unchecked") // a native query without a result class returns Object[] rows
-	private Page<HotelOfferView> availableOffers(String candidates, long locationId, StayRequirement stay,
-			Pageable pageable) {
-		List<Object[]> rows = bind(entityManager.createNativeQuery(candidates + PRICED_AVAILABILITY + PAGE_LINES),
-				locationId, stay)
+	private Page<HotelOfferView> availableOffers(String location, long locationId, StayRequirement stay,
+			HotelFilter filter, HotelOrder order, Pageable pageable) {
+		HotelFilterSql filters = new HotelFilterSql(filter);
+		String results = scopedAvailability(location, filters, filters.hotelPredicates(), "") + RESULTS
+				+ filters.price(stay.nights());
+		Query pageQuery = entityManager.createNativeQuery(
+				results + PAGE_LINES + HotelFilterSql.order(order) + PAGE_LINES_END);
+		List<Object[]> rows = filters.bind(bind(pageQuery, locationId, stay, filter))
 			.setParameter("limit", pageable.getPageSize())
 			.setParameter("offset", pageable.getOffset())
 			.getResultList();
@@ -222,18 +434,74 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 			.toList();
 		// Counts only when the page alone cannot tell the total.
 		return PageableExecutionUtils.getPage(offers, pageable,
-				() -> ((Number) bind(entityManager.createNativeQuery(candidates + PRICED_AVAILABILITY + COUNT_AVAILABLE),
-						locationId, stay).getSingleResult()).longValue());
+				() -> ((Number) filters.bind(bind(entityManager.createNativeQuery(results + COUNT_RESULTS), locationId,
+						stay, filter)).getSingleResult()).longValue());
 	}
 
-	private static Query bind(Query query, long locationId, StayRequirement stay) {
+	/**
+	 * Every hotel of the location is a candidate, since a hotel failing one filter still counts for that filter's
+	 * options; each option of an offer filter gets its own scope, so its count prices offers the way the list would.
+	 */
+	@SuppressWarnings("unchecked") // a native query without a result class returns Object[] rows
+	private FilterCountsView filterCounts(String location, long locationId, StayRequirement stay, HotelFilter filter) {
+		HotelFilterSql filters = new HotelFilterSql(filter);
+		String optionScopes = OPTION_SCOPE.formatted("BOARD_TYPE", "o.board_type", "",
+				filters.offerPredicates(FilterGroup.BOARD_TYPE))
+				+ OPTION_SCOPE.formatted("CANCELLATION", "o.cancellation", "",
+						"o.cancellation is not null and " + filters.offerPredicates(FilterGroup.CANCELLATION))
+				+ OPTION_SCOPE.formatted("BED_TYPE", "opt.code", "\n    cross join unnest(o.bed_types) as opt(code)",
+						filters.offerPredicates(FilterGroup.BED_TYPE))
+				// An AND filter: each feature narrows the current selection, so it keeps every offer predicate.
+				+ OPTION_SCOPE.formatted("ROOM_FEATURES", "opt.code",
+						"\n    cross join unnest(o.room_features) as opt(code)", filters.offerPredicates());
+		String price = filters.price(stay.nights());
+		String counts = String.join("\nunion all\n",
+				COUNT_BY_COLUMN.formatted("STARS", "c.star_rating", price,
+						filters.hotelPredicates(FilterGroup.STARS)),
+				threshold(FilterGroup.GOOGLE_RATING, "c.google_rating >= t.threshold", price, filters),
+				threshold(FilterGroup.USER_RATING, "c.user_rating_avg >= t.threshold", price, filters),
+				COUNT_BY_COLUMN.formatted("ACCOMMODATION_TYPE", "c.accommodation_type", price,
+						filters.hotelPredicates(FilterGroup.ACCOMMODATION_TYPE)),
+				// An AND filter, like room features.
+				COUNT_FACILITIES.formatted(price, filters.hotelPredicates()),
+				threshold(FilterGroup.DISTANCE, "c.distance_to_center_m <= t.threshold", price, filters),
+				COUNT_OFFER_OPTIONS.formatted(price, filters.hotelPredicates()),
+				PRICE_RANGE.formatted(filters.hotelPredicates()));
+		String sql = scopedAvailability(location, filters, "true", optionScopes) + counts;
+		List<Object[]> rows = filters.bind(bind(entityManager.createNativeQuery(sql), locationId, stay, filter))
+			.getResultList();
+		Map<FilterGroup, Map<String, Long>> hotels = new EnumMap<>(FilterGroup.class);
+		Long minTotal = null;
+		Long maxTotal = null;
+		for (Object[] row : rows) {
+			if ("PRICE".equals(row[0])) {
+				minTotal = row[3] == null ? null : ((Number) row[3]).longValue();
+				maxTotal = row[4] == null ? null : ((Number) row[4]).longValue();
+			}
+			else {
+				hotels.computeIfAbsent(FilterGroup.valueOf((String) row[0]), group -> new HashMap<>())
+					.put((String) row[1], ((Number) row[2]).longValue());
+			}
+		}
+		return new FilterCountsView(hotels, minTotal, maxTotal);
+	}
+
+	// The fixed values are constants of FilterGroup, never request data.
+	private static String threshold(FilterGroup group, String condition, String price, HotelFilterSql filters) {
+		return COUNT_BY_THRESHOLD.formatted(group.name(), String.join(", ", group.optionValues()), condition, price,
+				filters.hotelPredicates(group));
+	}
+
+	private static Query bind(Query query, long locationId, StayRequirement stay, HotelFilter filter) {
 		return query.setParameter("locationId", locationId)
 			.setParameter("checkIn", stay.checkIn())
 			.setParameter("checkOut", stay.checkOut())
 			.setParameter("nights", stay.nights())
 			.setParameter("rooms", stay.rooms())
 			.setParameter("adultsPerRoom", stay.adultsPerRoom())
-			.setParameter("childrenPerRoom", stay.childrenPerRoom());
+			.setParameter("childrenPerRoom", stay.childrenPerRoom())
+			.setParameter("now", filter.now())
+			.setParameter("priceCurrency", filter.priceCurrency());
 	}
 
 }
