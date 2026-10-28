@@ -1,0 +1,227 @@
+---
+phase: 1
+title: Schema and auth building blocks
+status: completed
+priority: P1
+effort: 2.5h
+dependencies: []
+---
+
+# Phase 1: Schema and auth building blocks
+
+## Overview
+
+One migration (users columns, `user_tokens`, `user_sessions`), the entities and repositories for them, opaque
+token helpers, `app.auth` settings, the logging mailer, reusable validation constraints, and the test mailer that
+lets integration tests read emailed links. No endpoint changes yet.
+
+## Context
+
+- `spring-base/DATABASE-SCHEMA.md` lines 164-241: `token_type`, `users`, `user_tokens`, `user_sessions`.
+- `V1__create_user_tables.sql`, `V3__create_hotel_catalog_tables.sql`: SQL style (lowercase, `uk_<table>_<col>`,
+  varchar + CHECK with UPPERCASE enum names, regex CHECK for `char(n)` columns).
+- `user/model/User.java`, `common/model/BaseEntity.java`: entity idiom. `smallint` maps to Java `short`.
+- `destination/repository/` + `repository/impl/`: `XRepository` (derived only) + `XRepositoryCustom` +
+  `impl/XRepositoryImpl` with `EntityManager`, JPQL first, no `@Query`.
+- `auth/security/JwtProperties.java`: `@Validated` properties record with masked `toString()`.
+
+## Requirements
+
+- Functional: schema matches the entities (`ddl-auto: validate`); existing users become verified.
+- Non-functional: only hashes of tokens stored; bulk updates bump `version`; no new libraries.
+
+## Architecture
+
+```
+users (+ phone, country_code, preferred_currency, email_verified_at,
+        failed_login_count, first_failed_login_at, locked_until)
+  ├─< user_tokens   (EMAIL_VERIFY | PASSWORD_RESET, token_hash unique, expires_at, used_at)
+  └─< user_sessions (refresh_token_hash unique, previous_token_hash idx, user_agent, ip,
+                     expires_at, last_used_at, revoked_at)
+```
+
+`UserToken`/`UserSession` live in `auth/model` (auth owns credentials); they reference `user.model.User`
+(auth → user dependency already exists; user never imports auth).
+
+## Related Code Files
+
+- Create: `spring-base/src/main/resources/db/migration/V4__create_user_token_and_session_tables.sql`
+- Modify: `spring-base/src/main/java/com/company/project/user/model/User.java`
+- Create: `.../user/repository/UserRepositoryCustom.java`, `.../user/repository/impl/UserRepositoryImpl.java`
+- Modify: `.../user/repository/UserRepository.java` (extends `UserRepositoryCustom`)
+- Create: `.../auth/model/TokenType.java`, `UserToken.java`, `UserSession.java`
+- Create: `.../auth/repository/UserTokenRepository.java`, `UserTokenRepositoryCustom.java`,
+  `impl/UserTokenRepositoryImpl.java`
+- Create: `.../auth/repository/UserSessionRepository.java`, `UserSessionRepositoryCustom.java`,
+  `impl/UserSessionRepositoryImpl.java`
+- Create: `.../auth/security/OpaqueTokens.java`
+- Create: `.../auth/config/AuthProperties.java`
+- Create: `.../auth/mail/AuthMailer.java`, `.../auth/mail/LoggingAuthMailer.java`
+- Create: `.../common/validation/StrongPassword.java`, `PhoneNumber.java`, `IsoCountry.java`,
+  `IsoCountryValidator.java`, `IsoCurrency.java`, `IsoCurrencyValidator.java`
+- Modify: `spring-base/src/main/resources/application.yml`, `src/test/resources/application-test.yml`,
+  `spring-base/.env.example`
+- Create: `spring-base/src/test/java/com/company/project/support/RecordingAuthMailer.java`
+- Modify: `spring-base/src/test/java/com/company/project/support/IntegrationTest.java` (import the test mailer config)
+- Create: `.../auth/repository/UserSessionRepositoryTest.java` (full app), `.../auth/security/OpaqueTokensTest.java`
+
+(`...` = `spring-base/src/main/java/com/company/project` or the matching `src/test` path.)
+
+## Implementation Steps
+
+1. **Rollback point**: copy `spring-base/src`, `README.md`, `CLAUDE.md`, `USER_STORIES.md`, `DATABASE-SCHEMA.md`,
+   `.env.example` to the session scratchpad. No git commits.
+2. **Migration `V4__create_user_token_and_session_tables.sql`**:
+   ```sql
+   -- Email verification, password reset, refresh-token sessions, sign-in lockout and profile fields.
+   -- Names follow DATABASE-SCHEMA.md; ids, version and audit timestamps follow this project (see V2).
+   alter table users
+       add column phone                 varchar(30),
+       add column country_code          varchar(2) check (country_code ~ '^[A-Z]{2}$'),       -- nationality
+       add column preferred_currency    varchar(3) check (preferred_currency ~ '^[A-Z]{3}$'), -- FK added with currencies
+       add column email_verified_at     timestamptz,
+       add column failed_login_count    smallint not null default 0 check (failed_login_count >= 0),
+       add column first_failed_login_at timestamptz, -- start of the current lockout window
+       add column locked_until          timestamptz;
+
+   -- Accounts created before verification existed keep signing in.
+   update users set email_verified_at = created_at;
+
+   -- One-time links sent by email. Only the SHA-256 of the token is stored.
+   create table user_tokens (
+       id         bigint generated by default as identity primary key,
+       user_id    bigint      not null references users (id) on delete cascade,
+       type       varchar(20) not null check (type in ('EMAIL_VERIFY', 'PASSWORD_RESET')),
+       token_hash varchar(64) not null,
+       expires_at timestamptz not null,
+       used_at    timestamptz,
+       version    bigint      not null default 0,
+       created_at timestamptz not null,
+       updated_at timestamptz not null,
+       constraint uk_user_tokens_token_hash unique (token_hash)
+   );
+   create index user_tokens_user_id_type_idx on user_tokens (user_id, type);
+
+   -- One row per sign-in (device). The refresh token rotates on every use; the hash it replaced is kept
+   -- so a replayed old token can be detected and the session revoked.
+   create table user_sessions (
+       id                  bigint generated by default as identity primary key,
+       user_id             bigint       not null references users (id) on delete cascade,
+       refresh_token_hash  varchar(64)  not null,
+       previous_token_hash varchar(64),
+       user_agent          varchar(500),
+       ip                  varchar(45),
+       expires_at          timestamptz  not null,
+       last_used_at        timestamptz,
+       revoked_at          timestamptz,
+       version             bigint       not null default 0,
+       created_at          timestamptz  not null,
+       updated_at          timestamptz  not null,
+       constraint uk_user_sessions_refresh_token_hash unique (refresh_token_hash)
+   );
+   create index user_sessions_user_id_idx on user_sessions (user_id);
+   create index user_sessions_previous_token_hash_idx on user_sessions (previous_token_hash);
+   ```
+3. **`User`** new fields (`phone`, `countryCode`, `preferredCurrency`, `emailVerifiedAt`, `short failedLoginCount`,
+   `firstFailedLoginAt`, `lockedUntil`) and domain methods; keep field rules here, no new setters:
+   - `create(email, passwordHash, fullName, phone, roles, Instant emailVerifiedAt)` (phone trimmed, blank → null).
+   - `isEmailVerified()`, `verifyEmail(Instant now)` (no-op when already set).
+   - `isLocked(Instant now)` = `lockedUntil != null && lockedUntil.isAfter(now)`.
+   - `changePasswordHash(String hash)`: sets hash and clears `failedLoginCount`, `firstFailedLoginAt`, `lockedUntil`.
+   - `updateProfile(fullName, phone, countryCode, preferredCurrency)`: trim; blank → null; codes uppercased (ROOT).
+4. **`UserRepositoryCustom` / `UserRepositoryImpl`** (`@Transactional` on each method, JPQL `update versioned User`):
+   - `void recordFailedLogin(String email, Instant now, Instant windowStart, int maxAttempts, Instant lockUntil)`:
+     ```
+     update versioned User u set
+       u.failedLoginCount = case when u.firstFailedLoginAt is null or u.firstFailedLoginAt < :windowStart
+                                 then 1 else u.failedLoginCount + 1 end,
+       u.firstFailedLoginAt = case when u.firstFailedLoginAt is null or u.firstFailedLoginAt < :windowStart
+                                   then :now else u.firstFailedLoginAt end,
+       u.lockedUntil = case when u.firstFailedLoginAt >= :windowStart and u.failedLoginCount + 1 >= :maxAttempts
+                            then :lockUntil else u.lockedUntil end
+     where u.email = :email
+     ```
+     All right-hand sides read the old row, so the lock test repeats the "still in window" condition. Unknown
+     email updates 0 rows. Literal `1` vs `short` column: cast if Hibernate complains (`cast(1 as Short)`).
+   - `void clearFailedLogins(Long userId)`: sets count 0, both timestamps null.
+5. **`TokenType`** (`EMAIL_VERIFY`, `PASSWORD_RESET`). **`UserToken`**: `@ManyToOne(fetch = LAZY) User user`,
+   `@Enumerated(STRING) type`, `tokenHash`, `expiresAt`, `usedAt`; `create(user, type, tokenHash, expiresAt)`,
+   `isUsable(now)` (unused and not expired), `markUsed(now)`.
+6. **`UserSession`**: `@ManyToOne(fetch = LAZY) User user`, hashes, `userAgent` (truncate to 500), `ip`,
+   `expiresAt`, `lastUsedAt`, `revokedAt`; `create(user, tokenHash, expiresAt, userAgent, ip)`,
+   `isActive(now)` (not revoked, not expired), `rotate(newHash, now)` (previous = current, current = new,
+   `lastUsedAt = now`), `revoke(now)` (only when not yet revoked).
+7. **Repositories** (derived queries on the interface, the rest in impls with `EntityManager`):
+   - `UserTokenRepository`: `existsByUserIdAndTypeAndCreatedAtAfter(Long userId, TokenType type, Instant since)`.
+     Custom: `Optional<UserToken> findByTokenHashForUpdate(String hash)` (JPQL + `LockModeType.PESSIMISTIC_WRITE`);
+     `int invalidateUnused(Long userId, TokenType type, Instant now)` (`update versioned … set usedAt = :now where
+     user.id = :userId and type = :type and usedAt is null`).
+   - `UserSessionRepository`: `existsByIdAndRevokedAtIsNullAndExpiresAtAfterAndUserEnabledTrue(Long id, Instant now)`.
+     Custom: `Optional<UserSession> findByTokenHashForUpdate(String hash)` matching `refreshTokenHash = :h or
+     previousTokenHash = :h`, `PESSIMISTIC_WRITE`, `join fetch s.user`; `Optional<UserSession>
+     findActiveByTokenHash(String hash, Instant now)` (logout); `int revokeAll(Long userId, Instant now)`;
+     `int revokeAllExcept(Long userId, Long keepSessionId, Instant now)` (all `update versioned`, only rows with
+     `revokedAt is null`).
+8. **`OpaqueTokens`** (public final utility, private ctor): `generate()` = 32 bytes from one static `SecureRandom`,
+   `Base64.getUrlEncoder().withoutPadding()`; `hash(raw)` = SHA-256 → lowercase hex (`HexFormat.of()`), 64 chars.
+9. **`AuthProperties`** `@Validated @ConfigurationProperties("app.auth")` record:
+   `@NotBlank frontendUrl`, `@NotNull Duration refreshTokenTtl, rememberMeTtl, emailVerificationTtl,
+   passwordResetTtl, emailCooldown`, `@Valid @NotNull Lockout lockout` with nested
+   `record Lockout(@Min(2) int maxAttempts, @NotNull Duration window, @NotNull Duration duration)`.
+   `application.yml`:
+   ```yaml
+   app:
+     jwt:
+       access-token-ttl: 15m
+     auth:
+       # Links in emails point here; the page POSTs the token to the API.
+       frontend-url: ${APP_FRONTEND_URL:http://localhost:5173}
+       refresh-token-ttl: 1d
+       remember-me-ttl: 30d
+       email-verification-ttl: 24h
+       password-reset-ttl: 30m
+       # Minimum time between two verification or reset emails to one account.
+       email-cooldown: 1m
+       lockout:
+         max-attempts: 5
+         window: 15m
+         duration: 15m
+   ```
+   `application-test.yml`: `email-cooldown: 0s` so tests can request links back to back. `.env.example`: add
+   `APP_FRONTEND_URL=http://localhost:5173` with a comment.
+10. **`AuthMailer`** interface: `sendEmailVerification(String email, String link)`,
+    `sendPasswordReset(String email, String link)`. **`LoggingAuthMailer`** `@Component`, `@Slf4j`: INFO
+    `"Email verification link for {}: {}"` / `"Password reset link for {}: {}"`; its constructor logs one WARN
+    "No email service: verification and reset links are written to this log".
+11. **Validation** (`common/validation`, imports no feature):
+    - `@StrongPassword`: composed constraint, `@Constraint(validatedBy = {})`, `@Size(min = 8, max = 72)` +
+      `@Pattern(regexp = "^(?=.*\\p{L})(?=.*\\d).*$", message = "must contain at least one letter and one digit")`.
+    - `@PhoneNumber`: composed, `@Size(max = 30)` + `@Pattern(regexp = "^\\s*\\+?[0-9][0-9 ().-]*$",
+      message = "must be a phone number")`; null valid (registration and profile both use it).
+    - `@IsoCountry` (null valid; in `Locale.getISOCountries()` after uppercasing) and `@IsoCurrency` (null valid;
+      `Currency.getInstance(upper)` succeeds and the code is 3 letters).
+12. **Test mailer**: `support/RecordingAuthMailer implements AuthMailer` keeps the last link per email+kind in a
+    static `ConcurrentHashMap`, with `static String verificationToken(String email)` /
+    `static String resetToken(String email)` (parse `token` query param; fail clearly when absent). Register it as
+    a `@Primary` bean in a `@TestConfiguration` imported by `@IntegrationTest` (same single context; do **not** put
+    it in `TestcontainersConfiguration`, which `TestProjectApplication` also uses for manual runs).
+13. **Tests**: `OpaqueTokensTest` (43-char url-safe tokens, distinct, hash is 64 hex and stable);
+    `UserSessionRepositoryTest` (`@IntegrationTest`): revokeAll/revokeAllExcept touch only that user's active rows;
+    `findByTokenHashForUpdate` finds by previous hash; the exists-query is false for revoked, expired, or disabled
+    user. Extend `UserRepositoryTest` for new columns + `recordFailedLogin` window/lock math (set
+    `first_failed_login_at` with `JdbcClient` to simulate time).
+
+## Success Criteria
+
+- [ ] App starts (`ddl-auto: validate` OK) and existing tests still pass (`./mvnw verify`).
+- [ ] Existing user rows have `email_verified_at` set after migrating.
+- [ ] `recordFailedLogin` reaches `locked_until` on the 5th failure inside the window and restarts at 1 outside it.
+- [ ] Bulk revoke methods affect only the target user's unrevoked rows and bump `version`.
+
+## Risk Assessment
+
+- `update versioned` + `case` on a `short` column: Hibernate type inference may need casts; covered by the repo test.
+- `firstFailedLoginAt >= :windowStart` is false for null, so the first failure never locks (max ≥ 2 is validated).
+- The recording mailer is `@Primary` for every integration test: the logging mailer is never exercised there.
+  Acceptable; it only logs.
+- Rollback: restore the scratchpad copy; V4 has not run anywhere but local/test DBs (`docker compose down -v` resets).
