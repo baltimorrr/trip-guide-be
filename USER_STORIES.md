@@ -126,8 +126,11 @@ The platform has a client site for travellers and an admin site shared by hotel 
    - Moving the map can optionally refresh results for the visible area ("Search this area").
    - Map and list stay in sync with the active filters.
 7. **C-SRCH-07 No results state [Added] (MVP)** — As a guest, I want helpful suggestions when nothing matches (e.g. remove a filter, nearby dates, nearby areas) so that I don't hit a dead end.
-8. **C-SRCH-08 Wishlist / favourites [Added] (Phase 2)** — As a customer, I want to save hotels to a wishlist so that I can compare and book later.
+8. **C-SRCH-08 Wishlist / favourites [Added] (Phase 2) ✅ Implemented** — As a customer, I want to save hotels to a wishlist so that I can compare and book later.
    - Saving is idempotent (saving twice keeps one entry); hearts on result cards show which hotels are saved.
+   - Hearts come from the wishlist (decided 28 Oct 2026: the wishlist endpoint returns the saved hotels as cards, and the client marks result cards from them; search results don't say what is saved).
+   - A saved hotel that stops being listed stays in the wishlist, marked unavailable (decided 28 Oct 2026), and can still be removed.
+   - The wishlist shows no prices, since they depend on dates and guests; the customer opens a saved hotel with their last search.
 
 ## 4. Client – Hotel detail
 

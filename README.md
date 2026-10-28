@@ -9,7 +9,8 @@ location autocomplete, hotel availability search and popular destinations (C-HOM
 result list (C-SRCH-01) with its filters, filter counts and sorting (C-SRCH-02/03), plus the admin endpoints that
 curate those destinations. See [Search and destinations](#search-and-destinations). Customer accounts
 (C-AUTH-01/02/04/05/06) have email verification, sign-in sessions per device, lockout, password reset and a profile.
-See [Accounts and sessions](#accounts-and-sessions).
+See [Accounts and sessions](#accounts-and-sessions). Signed-in customers can save hotels to a wishlist (C-SRCH-08).
+See [Wishlist](#wishlist).
 
 ## Stack
 
@@ -112,6 +113,9 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 | GET | `/api/search/hotels/filters?` (same parameters, no paging) | public | every filter option with its hotel count, price range per night |
 | GET | `/api/destinations/popular?limit=&hotels=` | public | featured destinations with their best hotels; max 20 × 10 |
 | GET | `/api/destinations/{slug}` | public | 404 if missing |
+| GET | `/api/wishlist?page=&size=` | authenticated | paged saved hotels as cards, newest first, each with `available` and `savedAt` |
+| PUT | `/api/wishlist/{hotelId}` | authenticated | 204 whether new or already saved; 404 unknown or unlisted hotel |
+| DELETE | `/api/wishlist/{hotelId}` | authenticated | always 204 |
 | GET | `/api/admin/destinations?q=` | ADMIN | paged; name prefix, featured first |
 | PUT | `/api/admin/destinations/{id}` | ADMIN | `{name, imageUrl, featuredRank}`; `featuredRank: null` = not featured |
 | POST | `/api/admin/destinations/sync` | ADMIN | runs the destination sync now: `{created, withHotels}` |
@@ -299,6 +303,33 @@ Nẵng, Hồ Chí Minh, Hà Nội and Hội An (one inactive hotel in Huế), an
 distances to the centre and facilities, and their room types have beds and room features. The `test` and
 `prod` profiles never load it. `docker compose down -v` resets it.
 
+## Wishlist
+
+Signed-in customers keep one wishlist of hotels to compare and book later (C-SRCH-08). Every call needs an access
+token, and the list is always the token's user's.
+
+- **Saving** (`PUT /api/wishlist/{hotelId}`) answers 204 whether the hotel is new to the list or already in it.
+  Saving again changes nothing and keeps the first `savedAt`, and two saves at once never conflict. Only listed
+  hotels (`ACTIVE`, not deleted) can be saved; any other id gets 404.
+- **Removing** (`DELETE /api/wishlist/{hotelId}`) always answers 204, also for a hotel that wasn't saved.
+- **The list** (`GET /api/wishlist`) is paged, newest saved first; `sort` is ignored. Each item has the search card's
+  hotel fields (`id`, `slug`, `name`, type, stars, ratings, place, distance) with one `coverPhotoUrl`, plus `savedAt`
+  and `available`. A hotel that is no longer listed stays with `available: false`: it can't be opened or booked
+  until it is listed again (then `available` turns back to `true`), and it can still be removed.
+- **No prices.** They depend on dates and guests, so the list has none. To compare, the client opens a saved hotel
+  with its last search (`/api/search/hotels?hotel={slug}&checkIn=...`).
+- **Hearts on result cards.** Search results don't say which hotels are saved. The client reads the hotel `id`s from
+  `GET /api/wishlist` (paging through with `size=100`), marks the result cards from them, and updates its copy when
+  it saves or removes a hotel.
+
+Deleting a user or a hotel row deletes its wishlist entries (`on delete cascade`).
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" $BASE/api/wishlist/1
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/wishlist?page=0&size=20"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/api/wishlist/1
+```
+
 ## Tests
 
 ```bash
@@ -339,6 +370,8 @@ distances to the centre and facilities, and their room types have beds and room 
 | `HotelSortTest` | unit | reading `sort`: any case, direction ignored, unknown or several values rejected |
 | `MoneyTest` | unit | minor units scaled by the currency's decimals, and back |
 | `DestinationServiceImplTest` | unit | featured order, fallback to top cities, limits |
+| `WishlistControllerTest` | full app | saving twice keeps one entry and its first `savedAt`, newest first and paging, idempotent remove, only listed hotels can be saved, delisted hotels stay as unavailable, one list per user, sign-in required |
+| `WishlistServiceImplTest` | unit | 404 without an insert, list keeps the entry order and availability, empty page skips the card query |
 
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
 Full-app tests use `@IntegrationTest` (`src/test/.../support`). Every class shares one Spring context and one
@@ -383,15 +416,17 @@ src/main/java/com/company/project/
 ├── destination/                         destinations: sync, popular, lookup, admin curation
 │   ├── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
 │   └── sync/                            scheduled and on-startup destination sync
-└── search/                              homepage search: suggestions, result list with prices, filters, sorting
-    └── controller/  config/  model/  dto/  mapper/  services/ (+ impl/)
+├── search/                              homepage search: suggestions, result list with prices, filters, sorting
+│   └── controller/  config/  model/  dto/  mapper/  services/ (+ impl/)
+└── wishlist/                            each user's saved hotels
+    └── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
 src/main/resources/
 ├── application.yml                      defaults for every profile
 ├── application-local.yml                local dev (the default profile): .env, Docker Compose, demo seed
 ├── application-prod.yml                 production overrides
 ├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions,
 │                                        V5 rates + taxes + night_price(), V6 amenities + beds +
-│                                        free_cancellation_until()
+│                                        free_cancellation_until(), V7 wishlists
 └── db/seed/R__demo_catalog.sql          demo hotels, local profile only
 ```
 
@@ -495,8 +530,9 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 2. Rename `groupId`/`artifactId`/`name` in `pom.xml`, the `com.company.project` package (and `ProjectApplication`
    if you like), and `spring.application.name`.
 3. Delete or replace the `product` feature and `V2__create_product_tables.sql`, and the hotel features if you don't
-   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `SchedulingConfig`,
-   `V3__create_hotel_catalog_tables.sql`, `V5__create_rate_and_tax_tables.sql`, `db/seed/`, the `app.search` / `app.destinations` settings and their `SecurityConfig` matchers). If the copy is
+   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `wishlist/`, `SchedulingConfig`,
+   `V3__create_hotel_catalog_tables.sql`, `V5__create_rate_and_tax_tables.sql`, `V6__create_amenity_and_bed_tables.sql`,
+   `V7__create_wishlist_table.sql`, `db/seed/`, the `app.search` / `app.destinations` settings and their `SecurityConfig` matchers). If the copy is
    brand new and has never run, you may renumber migrations.
 4. `git init`.
 

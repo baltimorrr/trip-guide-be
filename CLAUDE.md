@@ -13,8 +13,10 @@ notes and the "Adding a feature" checklist.
 is meant to become. Implemented so far: the homepage stories C-HOME-01/02/03 (`search/`, `destination/`, migration V3),
 the priced result list C-SRCH-01 (`rate/`, `tax/`, migration V5), its filters, filter counts and sorts C-SRCH-02/03
 (migration V6: amenities, bed types, `free_cancellation_until()`; the "recommended" sort is postponed), the admin
-slice of A-CONT-01 that curates destinations, and the email-account stories C-AUTH-01/02/04/05/06 (`auth/`, `user/`,
-migration V4; emails are only logged). The schema doc says it was generated from a `schema.sql` that is not in this repo.
+slice of A-CONT-01 that curates destinations, the email-account stories C-AUTH-01/02/04/05/06 (`auth/`, `user/`,
+migration V4; emails are only logged), and the wishlist C-SRCH-08 (`wishlist/`, migration V7; search results don't
+mark saved hotels, clients draw the hearts from `GET /api/wishlist`). The schema doc says it was generated from a
+`schema.sql` that is not in this repo.
 
 **Decided (2026-10-21): new tables keep the schema doc's table and column names but follow this project's
 conventions.** That means identity `bigint` ids, a `version` column, and `created_at`/`updated_at` set by auditing.
@@ -107,6 +109,12 @@ Other settings: `open-in-view` is off, so load lazy data inside the service tran
 Writes use `saveAndFlush` so the generated id, version and timestamps appear in the response. Races such as a duplicate
 email are left to unique constraints, which surface as 409.
 
+`WishlistEntry` is the only entity without `BaseEntity`: `wishlists` keeps the schema's composite key `(user_id,
+hotel_id)` (`@IdClass` record) and has only `created_at`, which the service sets. It is never built in Java. Saving is
+one HQL `insert ... on conflict do nothing` (Hibernate 7 supports it, so no native SQL) and removing is a JPQL bulk
+delete, so a repeated or concurrent save or remove never answers 409. The list doesn't filter by listing; it marks
+each hotel `available`.
+
 **Configuration.** `@ConfigurationPropertiesScan` binds records under `app.*`. `JwtProperties` is `@Validated`, and
 `JwtConfig` rejects a secret that isn't base64 of at least 32 bytes. There are three profiles:
 
@@ -138,7 +146,8 @@ The rest works as follows:
   - Spring Data finds the impl by the `Impl` suffix and merges it into the `XRepository` bean, so callers inject
     only `XRepository`. Keep the name `XRepositoryImpl`: with a name it doesn't recognise, Spring Data tries to
     derive those methods from their names and startup fails.
-  - `DestinationSyncRepository` has nothing to generate, so it is a plain interface plus a `@Repository` impl.
+  - `DestinationSyncRepository` and `WishlistRepository` have nothing to generate, so each is a plain interface
+    plus a `@Repository` impl.
   - Results of hand-written queries are records built by JPQL `select new ...` (`...View`).
 - In those impls: JPQL first. `DatabaseFunctionContributor` (`common/persistence`) registers `norm()` for JPQL,
   plus pg_trgm's `word_similar(a, b)` (renders `a <% b`, indexable) and `word_similarity(a, b)`. Hibernate
@@ -222,8 +231,9 @@ The rest works as follows:
 - Never edit a migration that has run anywhere. Add `V{next}__...sql`. New tables copy the standard columns from
   `V2__create_product_tables.sql` (identity `id`, `version bigint not null default 0`, `created_at`/`updated_at
   timestamptz not null`).
-- Entities extend `BaseEntity` and use `@Getter` and `@NoArgsConstructor(access = PROTECTED)`. A static `create(...)`
-  factory and domain methods such as `update(...)` hold the field rules (trimming, normalizing). Never put Lombok
+- Entities extend `BaseEntity` (except `WishlistEntry`, see Persistence) and use `@Getter` and
+  `@NoArgsConstructor(access = PROTECTED)`. A static `create(...)` factory and domain methods such as `update(...)`
+  hold the field rules (trimming, normalizing). Never put Lombok
   `@Data`, `@ToString` or `@EqualsAndHashCode` on an entity: `BaseEntity` defines equality by id.
 - Records and properties that carry secrets override `toString()` to mask them.
 - Normalize emails with `User.normalizeEmail` (trim and lowercase) before every lookup and insert. The unique

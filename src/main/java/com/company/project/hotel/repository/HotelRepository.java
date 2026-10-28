@@ -14,4 +14,6 @@ public interface HotelRepository extends JpaRepository<Hotel, Long>, HotelReposi
 
 	Optional<Hotel> findBySlugAndStatusAndDeletedAtIsNull(String slug, ListingStatus status);
 
+	boolean existsByIdAndStatusAndDeletedAtIsNull(Long id, ListingStatus status);
+
 }
