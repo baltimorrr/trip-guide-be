@@ -10,7 +10,7 @@ import lombok.NoArgsConstructor;
 
 /**
  * Reference data seeded by migration V6: single, double, queen, king, twin. Room types list their beds in
- * {@code room_type_beds}, which only the search's native SQL reads.
+ * {@code room_type_beds} ({@link RoomType#getBeds()}), which the search filters read in native SQL.
  */
 @Entity
 @Table(name = "bed_types")

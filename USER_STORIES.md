@@ -1,6 +1,6 @@
 # Hotel Booking Platform – User Stories
 
-Last updated: 23 Oct 2026 · matches database design `hotel_booking.dbml` (54 tables)
+Last updated: 28 Oct 2026 · matches database design `hotel_booking.dbml` (54 tables)
 
 ## Changes in this version
 
@@ -134,23 +134,31 @@ The platform has a client site for travellers and an admin site shared by hotel 
 
 ## 4. Client – Hotel detail
 
-1. **C-HOTEL-01 Hotel overview (MVP) (updated)** — As a guest, I want to see the hotel's photo gallery, description, star rating, address, Google rating, user rating and location on a map so that I can judge the hotel.
+1. **C-HOTEL-01 Hotel overview (MVP) (updated) ✅ Implemented** — As a guest, I want to see the hotel's photo gallery, description, star rating, address, Google rating, user rating and location on a map so that I can judge the hotel.
    - Gallery opens full screen and can be browsed by category (rooms, pool, lobby…).
    - The address is shown in one consistent format built from its parts (street, ward, district, city, country).
    - Map shows the hotel and distance to the city centre.
-2. **C-HOTEL-02 Facilities (MVP)** — As a guest, I want a grouped list of facilities (e.g. Wi-Fi, pool, parking, airport shuttle) so that I know what is included.
-3. **C-HOTEL-03 Hotel policies (MVP)** — As a guest, I want to see check-in and check-out times and hotel policies so that I'm not surprised on arrival.
+   - The country in the address is the country destination's name, like the search suggestions; the province is not part of the one-line address.
+2. **C-HOTEL-02 Facilities (MVP) ✅ Implemented** — As a guest, I want a grouped list of facilities (e.g. Wi-Fi, pool, parking, airport shuttle) so that I know what is included.
+   - Grouped under the amenity headings (General, Wellness…); each facility says whether it is free.
+3. **C-HOTEL-03 Hotel policies (MVP) ✅ Implemented** — As a guest, I want to see check-in and check-out times and hotel policies so that I'm not surprised on arrival.
    - Includes: check-in/check-out times, minimum check-in age, ID or deposit required, children and extra bed policy, pet policy, smoking policy, payment methods accepted at the property.
-4. **C-HOTEL-04 Room list (MVP)** — As a guest, I want to see all rooms available for my dates so that I can pick the right one.
+   - The times and minimum age are hotel columns; the other policies are free-text paragraphs by type, entered with SQL until the owner stories (O-HOTEL-*) add a write API.
+4. **C-HOTEL-04 Room list (MVP) ✅ Implemented** — As a guest, I want to see all rooms available for my dates so that I can pick the right one.
    - Each room option shows: room name, photos, size, bed type, max guests, room features, board type, cancellation policy, rooms left (e.g. "Only 2 left"), price per night and total price for the stay.
    - The same room type can appear several times with different board types or cancellation policies (rate plans), each with its own price.
    - Customer selects a quantity per room option, limited by the number of rooms left.
-   - Rooms that cannot fit the guest count are marked or hidden.
+   - Rooms that cannot fit the guest count are marked or hidden. Decided 28 Oct 2026: marked (`fitsGuests: false`) and listed after the rooms that fit, so a guest can still mix room types; fitting uses the search's even split of guests per room.
+   - Availability and prices use the search's own rules, so for one room the cheapest fitting rate is the offer on the search card. Sold-out room types and rates that can't sell the stay are not listed.
 5. **C-HOTEL-05 Change dates on detail page [Added] (MVP)** — As a guest, I want to change dates or guests on the hotel page so that room availability and prices refresh without a new search.
-6. **C-HOTEL-06 Cancellation policy detail [Added] (MVP)** — As a guest, I want to see the exact cancellation deadline and penalty for each rate so that I know what I'll pay if plans change.
-7. **C-HOTEL-07 Reviews (Phase 2)** — As a guest, I want to read reviews and scores from customers who stayed there so that I can trust the rating.
+   - API ready: the room list takes the stay as query parameters, so the page calls it again with the new dates or guests. The client part is left.
+6. **C-HOTEL-06 Cancellation policy detail [Added] (MVP) ✅ Implemented** — As a guest, I want to see the exact cancellation deadline and penalty for each rate so that I know what I'll pay if plans change.
+   - Each rate shows the free-cancellation deadline (the same as on the search card) and every penalty after it with its start, end and amount for one room, in the hotel's time zone.
+   - Until refunds (C-MYBK-03) decide otherwise, a fixed penalty is per room and a penalty in nights charges a fraction of a night pro rata.
+7. **C-HOTEL-07 Reviews (Phase 2) ✅ Implemented (reading)** — As a guest, I want to read reviews and scores from customers who stayed there so that I can trust the rating.
    - Only customers with a completed stay can write a review (C-MYBK-05).
    - Reviews show score, date, traveller type and text; can be sorted by newest or score.
+   - Decided 28 Oct 2026: reviews keep the database design's one review per booking; the link to bookings is added with the bookings table, so the demo data has no reviews and the list stays empty until C-MYBK-05 lets customers write them. Only published reviews are shown, without the reviewer's name; the hotel's rating summary is still the stored one.
 8. **C-HOTEL-08 Nearby places [Added] (Later)** — As a guest, I want to see nearby attractions, airports and transport with distances so that I can plan my trip.
 
 ## 5. Client – Cart and checkout

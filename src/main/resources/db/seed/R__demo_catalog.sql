@@ -194,3 +194,111 @@ join amenities a on a.code = any (case rt.name
         else '{air_conditioning,minibar,work_desk}'::text[] end)
 where h.slug like '%-demo'
 on conflict (room_type_id, amenity_id) do nothing;
+
+-- Hotel page demo (C-HOTEL-01/02/03): descriptions, check-in hours, map positions, a gallery with categories, room
+-- sizes and room photos, and policies. Each statement leaves rows it has already written alone.
+update hotels h
+set description = v.description
+from (values ('song-han-riverside-demo', 'A riverside hotel on Bạch Đằng with views of the Dragon Bridge, a short walk from the Hàn Market.'),
+             ('han-market-boutique-demo', 'A small boutique hotel in the old centre, two streets from the Hàn Market.'),
+             ('my-khe-beach-resort-demo', 'A beachfront resort on Mỹ Khê with a large pool, a spa and direct beach access.'),
+             ('son-tra-sea-view-demo', 'Apartments with kitchens and sea-view balconies, across the road from the beach.'),
+             ('saigon-central-demo', 'A business hotel on Lê Lợi, close to the Ben Thanh Market and the Opera House.'),
+             ('ben-thanh-hostel-demo', 'A lively hostel on Bùi Viện with dorms, private rooms and a rooftop bar.'),
+             ('hoan-kiem-lake-demo', 'A classic hotel a few minutes from Hoàn Kiếm Lake and the Old Quarter.'),
+             ('hoi-an-lantern-villa-demo', 'A garden villa near the Ancient Town, with a pool and bicycles for guests.'),
+             ('hue-imperial-demo', 'A quiet inn near the Perfume River and the Imperial City.')) as v(slug, description)
+where h.slug = v.slug and h.description is distinct from v.description;
+
+update hotels
+set check_in_until = '22:00'
+where slug in ('song-han-riverside-demo', 'han-market-boutique-demo', 'saigon-central-demo', 'hoan-kiem-lake-demo')
+  and check_in_until is null;
+
+update hotels set min_check_in_age = 21 where slug = 'ben-thanh-hostel-demo' and min_check_in_age is distinct from 21;
+
+update addresses a
+set latitude = v.latitude, longitude = v.longitude
+from hotels h
+join (values ('song-han-riverside-demo', 16.071600, 108.224100), ('han-market-boutique-demo', 16.068500, 108.223200),
+             ('my-khe-beach-resort-demo', 16.064000, 108.246800), ('son-tra-sea-view-demo', 16.070300, 108.244800),
+             ('saigon-central-demo', 10.773100, 106.701700), ('ben-thanh-hostel-demo', 10.767600, 106.693000),
+             ('hoan-kiem-lake-demo', 21.024700, 105.852400), ('hoi-an-lantern-villa-demo', 15.878600, 108.330000),
+             ('hue-imperial-demo', 16.468000, 107.588000)) as v(slug, latitude, longitude)
+    on v.slug = h.slug
+where a.id = h.address_id and (a.latitude is distinct from v.latitude or a.longitude is distinct from v.longitude);
+
+-- Gallery: lobby, restaurant and (with a pool) pool photos after the exterior cover, plus one photo per room type.
+insert into hotel_photos (hotel_id, url, category, caption, sort_order, created_at, updated_at)
+select h.id, 'https://picsum.photos/seed/' || h.slug || '-' || p.category || '/800/600', p.category, p.caption,
+       p.sort_order, now(), now()
+from hotels h
+cross join (values ('lobby', 'Lobby', 1), ('restaurant', 'Restaurant', 2), ('pool', 'Swimming pool', 3))
+    as p(category, caption, sort_order)
+where h.slug like '%-demo'
+  and (p.category <> 'pool' or exists (select 1 from hotel_amenities ha join amenities am on am.id = ha.amenity_id
+                                       where ha.hotel_id = h.id and am.code = 'pool'))
+  and not exists (select 1 from hotel_photos x
+                  where x.hotel_id = h.id and x.url = 'https://picsum.photos/seed/' || h.slug || '-' || p.category || '/800/600');
+
+insert into hotel_photos (hotel_id, room_type_id, url, category, caption, created_at, updated_at)
+select h.id, rt.id, 'https://picsum.photos/seed/' || h.slug || '-' || lower(replace(rt.name, ' ', '-')) || '/800/600',
+       'room', rt.name, now(), now()
+from room_types rt
+join hotels h on h.id = rt.hotel_id
+where h.slug like '%-demo'
+  and not exists (select 1 from hotel_photos x where x.room_type_id = rt.id);
+
+update room_types rt
+set size_sqm = v.size_sqm, description = v.description
+from hotels h,
+     (values ('Deluxe Double', 28.0, 'A double room with a work desk and a minibar.'),
+             ('Family Suite', 45.0, 'A suite with a separate living area and a balcony, for up to four guests.'))
+         as v(name, size_sqm, description)
+where h.id = rt.hotel_id and h.slug like '%-demo' and rt.name = v.name and rt.size_sqm is null;
+
+insert into hotel_policies (hotel_id, policy_type, description, sort_order, created_at, updated_at)
+select h.id, p.policy_type,
+       case when p.policy_type <> 'PETS' then p.description
+            when exists (select 1 from hotel_amenities ha join amenities am on am.id = ha.amenity_id
+                         where ha.hotel_id = h.id and am.code = 'pets_allowed')
+                then 'Pets are allowed on request. Charges may apply.'
+            else 'Pets are not allowed.' end,
+       p.sort_order, now(), now()
+from hotels h
+cross join (values ('CHILDREN', 'Children of all ages are welcome. Children under 6 stay free using existing beds.', 1),
+                   ('EXTRA_BED', 'Extra beds are available in the Family Suite on request for 400,000 VND per night.', 2),
+                   ('PETS', null, 3),
+                   ('SMOKING', 'Smoking is not allowed in the rooms. There is a smoking area outside.', 4),
+                   ('DEPOSIT', 'A photo ID and a refundable deposit of 1,000,000 VND are required at check-in.', 5),
+                   ('PAYMENT', 'The property accepts cash, Visa and Mastercard.', 6))
+    as p(policy_type, description, sort_order)
+where h.slug like '%-demo' and not exists (select 1 from hotel_policies x where x.hotel_id = h.id);
+
+-- Cancellation demo (C-HOTEL-06): a two-tier policy, free until 72 hours before check-in, half the stay from then and
+-- the whole stay in the last 24 hours. Mỹ Khê's room-only plans use it instead of the 24-hour one.
+do $$
+declare
+    free_policy   bigint;
+    tiered_policy bigint;
+begin
+    select id into tiered_policy from cancellation_policies
+    where hotel_id is null and name = 'Free until 72 hours before check-in';
+    if tiered_policy is null then
+        insert into cancellation_policies (name, is_refundable, created_at, updated_at)
+        values ('Free until 72 hours before check-in', true, now(), now())
+        returning id into tiered_policy;
+        insert into cancellation_policy_rules (policy_id, hours_before_check_in, penalty_type, penalty_value,
+                                               created_at, updated_at)
+        values (tiered_policy, 72, 'PERCENT', 50, now(), now()),
+               (tiered_policy, 24, 'PERCENT', 100, now(), now());
+    end if;
+
+    select id into free_policy from cancellation_policies
+    where hotel_id is null and name = 'Free cancellation until 24 hours before check-in';
+    update rate_plans rp
+    set cancellation_policy_id = tiered_policy, updated_at = now()
+    from room_types rt
+    join hotels h on h.id = rt.hotel_id
+    where rp.room_type_id = rt.id and h.slug = 'my-khe-beach-resort-demo' and rp.cancellation_policy_id = free_policy;
+end $$;

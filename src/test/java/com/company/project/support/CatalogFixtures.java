@@ -1,17 +1,21 @@
 package com.company.project.support;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Inserts hotel-catalog rows for integration tests. There are no hotel write APIs yet, so tests
- * build their data in SQL. The database is shared and never rolled back: give every place and hotel
- * a {@link #uniqueSuffix()} and assert only on your own rows.
+ * Inserts hotel-catalog rows, and the reviews of hotels, for integration tests. There are no hotel or review write
+ * APIs yet, so tests build their data in SQL. The database is shared and never rolled back: give every place and
+ * hotel a {@link #uniqueSuffix()} and assert only on your own rows.
  */
 public final class CatalogFixtures {
 
@@ -74,23 +78,36 @@ public final class CatalogFixtures {
 	}
 
 	public void photo(long hotelId, String url, boolean cover, int sortOrder) {
+		photo(hotelId, url, null, null, cover, sortOrder);
+	}
+
+	/** A photo of the hotel itself; {@code category} (pool, lobby...) and {@code caption} may be null. */
+	public void photo(long hotelId, String url, String category, String caption, boolean cover, int sortOrder) {
 		jdbc.sql("""
-				insert into hotel_photos (hotel_id, url, is_cover, sort_order, created_at, updated_at)
-				values (:hotelId, :url, :cover, :sortOrder, now(), now())""")
+				insert into hotel_photos (hotel_id, url, category, caption, is_cover, sort_order, created_at, updated_at)
+				values (:hotelId, :url, :category, :caption, :cover, :sortOrder, now(), now())""")
 			.param("hotelId", hotelId)
 			.param("url", url)
+			.param("category", category)
+			.param("caption", caption)
 			.param("cover", cover)
 			.param("sortOrder", sortOrder)
 			.update();
 	}
 
 	public void roomPhoto(long hotelId, long roomTypeId, String url) {
+		roomPhoto(hotelId, roomTypeId, url, null, 0);
+	}
+
+	public void roomPhoto(long hotelId, long roomTypeId, String url, String category, int sortOrder) {
 		jdbc.sql("""
-				insert into hotel_photos (hotel_id, room_type_id, url, created_at, updated_at)
-				values (:hotelId, :roomTypeId, :url, now(), now())""")
+				insert into hotel_photos (hotel_id, room_type_id, url, category, sort_order, created_at, updated_at)
+				values (:hotelId, :roomTypeId, :url, :category, :sortOrder, now(), now())""")
 			.param("hotelId", hotelId)
 			.param("roomTypeId", roomTypeId)
 			.param("url", url)
+			.param("category", category)
+			.param("sortOrder", sortOrder)
 			.update();
 	}
 
@@ -98,13 +115,49 @@ public final class CatalogFixtures {
 		jdbc.sql("update hotels set status = :status where id = :id").param("status", status).param("id", hotelId).update();
 	}
 
-	/** Links a facility seeded by V6 ({@code wifi}, {@code pool}...) to the hotel. */
-	public void hotelAmenity(long hotelId, String code) {
+	public void roomTypeStatus(long roomTypeId, String status) {
+		jdbc.sql("update room_types set status = :status where id = :id")
+			.param("status", status)
+			.param("id", roomTypeId)
+			.update();
+	}
+
+	/** What the hotel page shows about a room type besides its capacity; {@code sizeSqm} like "28.5", or null. */
+	public void roomTypeDetails(long roomTypeId, String description, String sizeSqm, int sortOrder) {
 		jdbc.sql("""
-				insert into hotel_amenities (hotel_id, amenity_id)
-				values (:hotelId, (select id from amenities where code = :code))""")
+				update room_types set description = :description, size_sqm = :sizeSqm, sort_order = :sortOrder
+				where id = :id""")
+			.param("description", description)
+			.param("sizeSqm", sizeSqm == null ? null : new BigDecimal(sizeSqm))
+			.param("sortOrder", sortOrder)
+			.param("id", roomTypeId)
+			.update();
+	}
+
+	/** Links a facility seeded by V6 ({@code wifi}, {@code pool}...) to the hotel, free of charge. */
+	public void hotelAmenity(long hotelId, String code) {
+		hotelAmenity(hotelId, code, true);
+	}
+
+	public void hotelAmenity(long hotelId, String code, boolean free) {
+		jdbc.sql("""
+				insert into hotel_amenities (hotel_id, amenity_id, is_free)
+				values (:hotelId, (select id from amenities where code = :code), :free)""")
 			.param("hotelId", hotelId)
 			.param("code", code)
+			.param("free", free)
+			.update();
+	}
+
+	/** A policy paragraph; {@code type} is a {@code HotelPolicyType} name (CHILDREN, PETS...). */
+	public void hotelPolicy(long hotelId, String type, String description, int sortOrder) {
+		jdbc.sql("""
+				insert into hotel_policies (hotel_id, policy_type, description, sort_order, created_at, updated_at)
+				values (:hotelId, :type, :description, :sortOrder, now(), now())""")
+			.param("hotelId", hotelId)
+			.param("type", type)
+			.param("description", description)
+			.param("sortOrder", sortOrder)
 			.update();
 	}
 
@@ -131,6 +184,22 @@ public final class CatalogFixtures {
 
 	public RatePlanBuilder ratePlan(long roomTypeId) {
 		return new RatePlanBuilder(roomTypeId);
+	}
+
+	/** An account that only owns reviews: its password hash matches nothing, so it can't sign in. */
+	public long user() {
+		return jdbc.sql("""
+				insert into users (email, password_hash, full_name, created_at, updated_at)
+				values ('reviewer-' || :suffix || '@test.local', '{noop}unused', 'Reviewer ' || :suffix, now(), now())
+				returning id""")
+			.param("suffix", uniqueSuffix())
+			.query(Long.class)
+			.single();
+	}
+
+	/** A review of the hotel by {@code userId} with a score from 1 to 10. */
+	public ReviewBuilder review(long hotelId, long userId, int score) {
+		return new ReviewBuilder(hotelId, userId, score);
 	}
 
 	/** A hotel's own policy; add its rules with {@link #cancellationRule}. No rules = free until check-in. */
@@ -276,6 +345,92 @@ public final class CatalogFixtures {
 
 	}
 
+	/** Defaults: published, written now, without title, text, traveller type or owner reply. */
+	public final class ReviewBuilder {
+
+		private final long hotelId;
+
+		private final long userId;
+
+		private final int score;
+
+		private String title;
+
+		private String body;
+
+		private String travellerType;
+
+		private String status = "PUBLISHED";
+
+		private Instant createdAt = Instant.now();
+
+		private String ownerReply;
+
+		private Instant ownerRepliedAt;
+
+		private ReviewBuilder(long hotelId, long userId, int score) {
+			this.hotelId = hotelId;
+			this.userId = userId;
+			this.score = score;
+		}
+
+		public ReviewBuilder title(String title) {
+			this.title = title;
+			return this;
+		}
+
+		public ReviewBuilder body(String body) {
+			this.body = body;
+			return this;
+		}
+
+		/** A {@code TravellerType} name: SOLO, COUPLE, FAMILY, BUSINESS, GROUP. */
+		public ReviewBuilder travellerType(String travellerType) {
+			this.travellerType = travellerType;
+			return this;
+		}
+
+		public ReviewBuilder hidden() {
+			this.status = "HIDDEN";
+			return this;
+		}
+
+		public ReviewBuilder createdAt(Instant createdAt) {
+			this.createdAt = createdAt;
+			return this;
+		}
+
+		public ReviewBuilder ownerReply(String reply, Instant repliedAt) {
+			this.ownerReply = reply;
+			this.ownerRepliedAt = repliedAt;
+			return this;
+		}
+
+		public long create() {
+			// No bookings table yet, so booking_id has no foreign key: any number no other review uses will do.
+			return jdbc.sql("""
+					insert into reviews (booking_id, hotel_id, user_id, score, title, body, traveller_type, status,
+					                     owner_reply, owner_replied_at, created_at, updated_at)
+					values (:bookingId, :hotelId, :userId, :score, :title, :body, :travellerType, :status, :ownerReply,
+					        :ownerRepliedAt, :createdAt, :createdAt)
+					returning id""")
+				.param("bookingId", ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE))
+				.param("hotelId", hotelId)
+				.param("userId", userId)
+				.param("score", score)
+				.param("title", title)
+				.param("body", body)
+				.param("travellerType", travellerType)
+				.param("status", status)
+				.param("ownerReply", ownerReply)
+				.param("ownerRepliedAt", ownerRepliedAt == null ? null : ownerRepliedAt.atOffset(ZoneOffset.UTC))
+				.param("createdAt", createdAt.atOffset(ZoneOffset.UTC))
+				.query(Long.class)
+				.single();
+		}
+
+	}
+
 	/** Pick one adjustment: {@link #percent}, {@link #amount} or {@link #setPrice}. Priority defaults to 0. */
 	public final class RateRuleBuilder {
 
@@ -380,8 +535,40 @@ public final class CatalogFixtures {
 
 		private BigDecimal googleRating;
 
+		private String description;
+
+		private BigDecimal latitude;
+
+		private BigDecimal longitude;
+
+		private LocalTime checkInUntil;
+
+		// The column's default, so a hotel built without it reads like one inserted without it.
+		private Integer minCheckInAge = 18;
+
 		private HotelBuilder(String name) {
 			this.name = name;
+		}
+
+		public HotelBuilder description(String description) {
+			this.description = description;
+			return this;
+		}
+
+		public HotelBuilder coordinates(String latitude, String longitude) {
+			this.latitude = new BigDecimal(latitude);
+			this.longitude = new BigDecimal(longitude);
+			return this;
+		}
+
+		public HotelBuilder checkInUntil(LocalTime checkInUntil) {
+			this.checkInUntil = checkInUntil;
+			return this;
+		}
+
+		public HotelBuilder minCheckInAge(Integer minCheckInAge) {
+			this.minCheckInAge = minCheckInAge;
+			return this;
 		}
 
 		public HotelBuilder country(String countryCode) {
@@ -456,30 +643,34 @@ public final class CatalogFixtures {
 				.query(Long.class)
 				.single();
 			long addressId = jdbc.sql("""
-					insert into addresses (line1, ward, district, city, state_province, country_code, created_at,
-					                       updated_at)
-					values ('1 Test Street', :ward, :district, :city, :stateProvince, :countryCode, now(), now())
+					insert into addresses (line1, ward, district, city, state_province, country_code, latitude, longitude,
+					                       created_at, updated_at)
+					values ('1 Test Street', :ward, :district, :city, :stateProvince, :countryCode, :latitude, :longitude,
+					        now(), now())
 					returning id""")
 				.param("ward", ward)
 				.param("district", district)
 				.param("city", city)
 				.param("stateProvince", stateProvince)
 				.param("countryCode", countryCode)
+				.param("latitude", latitude)
+				.param("longitude", longitude)
 				.query(Long.class)
 				.single();
 			String slug = "hotel-" + uniqueSuffix();
 			long hotelId = jdbc.sql("""
-					insert into hotels (partner_id, accommodation_type_id, name, slug, star_rating, address_id,
+					insert into hotels (partner_id, accommodation_type_id, name, slug, description, star_rating, address_id,
 					                    distance_to_center_m, user_rating_avg, user_rating_count, google_rating, currency,
-					                    timezone, status, created_at, updated_at)
-					values (:partnerId, (select id from accommodation_types where code = :type), :name, :slug, :stars,
-					        :addressId, :distance, :userRatingAvg, :userRatingCount, :googleRating, :currency,
-					        'Asia/Ho_Chi_Minh', :status, now(), now())
+					                    timezone, check_in_until, min_check_in_age, status, created_at, updated_at)
+					values (:partnerId, (select id from accommodation_types where code = :type), :name, :slug, :description,
+					        :stars, :addressId, :distance, :userRatingAvg, :userRatingCount, :googleRating, :currency,
+					        'Asia/Ho_Chi_Minh', :checkInUntil, :minCheckInAge, :status, now(), now())
 					returning id""")
 				.param("partnerId", partnerId)
 				.param("type", accommodationType)
 				.param("name", name)
 				.param("slug", slug)
+				.param("description", description)
 				.param("stars", starRating)
 				.param("addressId", addressId)
 				.param("distance", distanceToCenterM)
@@ -487,6 +678,8 @@ public final class CatalogFixtures {
 				.param("userRatingCount", userRatingCount)
 				.param("googleRating", googleRating)
 				.param("currency", currency)
+				.param("checkInUntil", checkInUntil)
+				.param("minCheckInAge", minCheckInAge)
 				.param("status", status)
 				.query(Long.class)
 				.single();

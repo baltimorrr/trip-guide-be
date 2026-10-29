@@ -28,6 +28,13 @@ public class HotelPhoto extends BaseEntity {
 	@Column(nullable = false, length = 500)
 	private String url;
 
+	/** What it shows: room, pool, lobby, exterior...; the gallery is browsed by it. */
+	@Column(length = 30)
+	private String category;
+
+	@Column(length = 200)
+	private String caption;
+
 	@Column(name = "is_cover", nullable = false)
 	private boolean cover;
 

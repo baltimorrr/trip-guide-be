@@ -14,9 +14,13 @@ is meant to become. Implemented so far: the homepage stories C-HOME-01/02/03 (`s
 the priced result list C-SRCH-01 (`rate/`, `tax/`, migration V5), its filters, filter counts and sorts C-SRCH-02/03
 (migration V6: amenities, bed types, `free_cancellation_until()`; the "recommended" sort is postponed), the admin
 slice of A-CONT-01 that curates destinations, the email-account stories C-AUTH-01/02/04/05/06 (`auth/`, `user/`,
-migration V4; emails are only logged), and the wishlist C-SRCH-08 (`wishlist/`, migration V7; search results don't
-mark saved hotels, clients draw the hearts from `GET /api/wishlist`). The schema doc says it was generated from a
-`schema.sql` that is not in this repo.
+migration V4; emails are only logged), the wishlist C-SRCH-08 (`wishlist/`, migration V7; search results don't
+mark saved hotels, clients draw the hearts from `GET /api/wishlist`), and the hotel page C-HOTEL-01/02/03/04/06/07
+(`hotel/` controller and service, `review/`, migration V8: `hotel_policies`, `reviews`; reviews are read-only until
+C-MYBK-05). The schema doc says it was generated from a `schema.sql` that is not in this repo. **Decided
+(2026-10-28), hotel page:** `reviews` follows the doc exactly (`booking_id` not null and unique; its FK is added by
+the migration that creates `bookings`), so the demo seed has no reviews; room types that don't fit the guests are
+listed last with `fitsGuests: false`, not hidden.
 
 **Decided (2026-10-21): new tables keep the schema doc's table and column names but follow this project's
 conventions.** That means identity `bigint` ids, a `version` column, and `created_at`/`updated_at` set by auditing.
@@ -115,6 +119,11 @@ one HQL `insert ... on conflict do nothing` (Hibernate 7 supports it, so no nati
 delete, so a repeated or concurrent save or remove never answers 409. The list doesn't filter by listing; it marks
 each hotel `available`.
 
+Link tables without columns of their own are mapped read-only on their owner: `Hotel.facilities`
+(`hotel_amenities`, an `@Embeddable` with `is_free`), `RoomType.beds` (`room_type_beds`) and `RoomType.features`
+(`room_type_amenities`). They are lazy and read only through JPQL joins on the hotel page; search keeps reading the
+tables in its native SQL.
+
 **Configuration.** `@ConfigurationPropertiesScan` binds records under `app.*`. `JwtProperties` is `@Validated`, and
 `JwtConfig` rejects a secret that isn't base64 of at least 32 bytes. There are three profiles:
 
@@ -193,6 +202,14 @@ The rest works as follows:
 - The SQL function `free_cancellation_until()` (V6) is the twin of `FreeCancellation.until` (the cancellation filter
   uses one, the cards the other); change both. `FreeCancellationSqlTest` compares them. The service captures one
   `now` and passes it to both.
+- The hotel page's room list (`HotelRepositoryImpl.findRoomRates`) reuses the chain's first CTEs, so it and the search
+  agree on what can be sold: `NIGHTS`, `FREE_ROOMS` (+ `FREE_ROOMS_END`), `RATE_OFFERS`, and `ROOM_TYPE_FITS`, the
+  only definition of "a room type holds one room's guests" (search filters by it, the room list reports it). Change
+  them once; `HotelControllerRoomsTest#theCheapestFittingRateIsTheSearchCardsOffer` keeps the two equal. Its
+  `night_prices` column (`bigint[]`, read as `Long[]`) feeds `CancellationSchedule`, which turns a policy's rules into
+  priced tiers; the free deadline stays `FreeCancellation.until`, and the first paid tier starts there.
+- `SearchCriteria.today()` (the date at UTC−12) is the "today" every stay is checked against, in search and on the
+  hotel page.
 - Price filter and sort compare one currency (`HotelFilter.priceCurrency`: the request's `currency`, else the most
   common selling currency of the destination's listed hotels) until currency conversion exists (C-SRCH-05).
 - Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels).
@@ -216,7 +233,8 @@ The rest works as follows:
   disables the schedule), and assert only on your own slugs. Featured and popular lists are shared by all tests, so
   assert relative order, not positions. `HotelBuilder` sets stars, type, distance and currency; `hotelAmenity`,
   `roomAmenity` and `bed` link V6 reference rows. A hotel in another currency needs `bareRoomType` plus a
-  `ratePlan(...).currency(...)` in that currency.
+  `ratePlan(...).currency(...)` in that currency. `review(...)` inserts a review with a random fake `booking_id`
+  (no bookings table yet), written by `user()`, an account that can't sign in.
 - MockMvc encodes `%` in a URI template again; send text with `%` through `.param(...)`.
 - JDBC reads `smallint` back as `Integer`, not `Short`.
 - A `@DataJpaTest` needs `@AutoConfigureTestDatabase(replace = NONE)`, `@Import({TestcontainersConfiguration.class,
@@ -245,8 +263,11 @@ The rest works as follows:
 - README "Known limitations" lists gaps left in on purpose: emails are only logged, no per-IP sign-in rate limiting
   (accounts lock instead), registration's 409 reveals existing emails, concurrent refreshes sign a device out. It also
   covers the limits of the hotel search (no currency conversion or "recommended" sort, room prices only with a tax
-  flag, even split of guests per room, the cost of the filter counts).
+  flag, even split of guests per room, the cost of the filter counts) and of the hotel page (read-only reviews and
+  stored ratings, per-room `FIXED` penalties, exact `roomsLeft`).
 - JPQL bulk updates bypass auditing and versioning: write `update versioned X` and set `updatedAt` yourself (see
   `UserSessionRepositoryImpl`).
 - Public endpoints need a `permitAll` matcher in `SecurityConfig` and an empty `@SecurityRequirements` on the
   operation. Admin endpoints live under `/api/admin/**` with a class-level `@PreAuthorize("hasRole('ADMIN')")`.
+  Every GET under `/api/hotels/**` is public (the hotel page), so authenticated hotel endpoints (owners, admins) need
+  another prefix.

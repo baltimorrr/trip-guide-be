@@ -1,6 +1,7 @@
 package com.company.project.search.model;
 
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 
@@ -16,6 +17,15 @@ import org.springframework.http.HttpStatus;
  * {@link #adultsPerRoom()} adults and {@link #childrenPerRoom()} children.
  */
 public record SearchCriteria(LocalDate checkIn, LocalDate checkOut, int rooms, int adults, List<Integer> childAges) {
+
+	// UTC-12 is the last place where any given date is still "today". Comparing check-in with the date
+	// there never rejects a traveller's own today, wherever they are.
+	private static final ZoneOffset LATEST_TIME_ZONE = ZoneOffset.ofHours(-12);
+
+	/** The {@code today} stays are checked against: the date that is still today somewhere on Earth. */
+	public static LocalDate today() {
+		return LocalDate.now(LATEST_TIME_ZONE);
+	}
 
 	/** @throws BusinessException 400 with a message naming the first rule broken */
 	public static SearchCriteria of(LocalDate checkIn, LocalDate checkOut, int rooms, int adults,

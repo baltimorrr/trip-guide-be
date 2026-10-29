@@ -27,6 +27,18 @@ public interface HotelRepositoryCustom {
 	/** Photos of these hotels themselves (no room photos), per hotel cover first, then in their order. */
 	List<HotelPhotoView> findHotelPhotos(Collection<Long> hotelIds);
 
+	/** The listed hotel with this slug, as the hotel page shows it; empty when there is none. */
+	Optional<HotelDetailView> findDetail(String slug);
+
+	/**
+	 * The hotel page's gallery: photos of the hotel itself (cover first, then in their order), then photos of its room
+	 * types that are on sale.
+	 */
+	List<GalleryPhotoView> findGallery(long hotelId);
+
+	/** The hotel's facilities (HOTEL-scope amenities) by group, then name. */
+	List<HotelFacilityView> findFacilities(long hotelId);
+
 	/** The selling currency of most listed hotels inside the destination (ties: alphabetical); empty without any. */
 	Optional<String> findMainCurrencyInDestination(long destinationId);
 
@@ -40,6 +52,13 @@ public interface HotelRepositoryCustom {
 	/** Like {@link #findAvailableInDestination} for one hotel: a page with it, or an empty page. */
 	Page<HotelOfferView> findAvailableHotel(long hotelId, StayRequirement stay, HotelFilter filter, HotelOrder order,
 			Pageable pageable);
+
+	/**
+	 * The hotel page's room list (C-HOTEL-04): every rate plan of the listed hotel that can sell the stay, by the same
+	 * rules as the search, whether or not its room type fits the guests. Fitting room types first, then cheapest
+	 * first; empty when the hotel can sell nothing for these nights.
+	 */
+	List<RoomRateView> findRoomRates(long hotelId, StayRequirement stay);
 
 	/**
 	 * For each filter option, how many listed hotels inside the destination would show if that option were picked

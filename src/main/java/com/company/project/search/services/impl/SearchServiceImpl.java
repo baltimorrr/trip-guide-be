@@ -1,8 +1,6 @@
 package com.company.project.search.services.impl;
 
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.Currency;
 import java.util.List;
 import java.util.Map;
@@ -62,10 +60,6 @@ public class SearchServiceImpl implements SearchService {
 	static final int MAX_SUGGESTIONS = 10;
 
 	static final int MAX_CARD_PHOTOS = 10;
-
-	// UTC-12 is the last place where any given date is still "today". Comparing check-in with the date
-	// there never rejects a traveller's own today, wherever they are.
-	private static final ZoneOffset LATEST_TIME_ZONE = ZoneOffset.ofHours(-12);
 
 	private final DestinationRepository destinations;
 
@@ -131,7 +125,7 @@ public class SearchServiceImpl implements SearchService {
 			throw new BusinessException(HttpStatus.BAD_REQUEST, "Choose either a destination or a hotel");
 		}
 		SearchCriteria criteria = SearchCriteria.of(request.checkIn(), request.checkOut(), request.rooms(),
-				request.adults(), request.childAges(), LocalDate.now(LATEST_TIME_ZONE), limits);
+				request.adults(), request.childAges(), SearchCriteria.today(), limits);
 		StayRequirement stay = new StayRequirement(criteria.checkIn(), criteria.checkOut(), criteria.rooms(),
 				criteria.adultsPerRoom(), criteria.childrenPerRoom());
 		long locationId;

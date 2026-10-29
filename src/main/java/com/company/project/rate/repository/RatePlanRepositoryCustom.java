@@ -9,4 +9,7 @@ public interface RatePlanRepositoryCustom {
 	/** Descriptions of these rate plans, in no particular order. */
 	List<RateOfferView> findOfferDetails(Collection<Long> ratePlanIds);
 
+	/** The rules of these rate plans' cancellation policies, per rate plan by hours before check-in. */
+	List<CancellationRuleView> findCancellationRules(Collection<Long> ratePlanIds);
+
 }

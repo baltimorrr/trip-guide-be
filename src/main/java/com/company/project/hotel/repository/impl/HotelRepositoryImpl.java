@@ -13,7 +13,10 @@ import com.company.project.hotel.model.AmenityScope;
 import com.company.project.hotel.repository.FilterCountsView;
 import com.company.project.hotel.repository.FilterGroup;
 import com.company.project.hotel.repository.FilterOptionView;
+import com.company.project.hotel.repository.GalleryPhotoView;
 import com.company.project.hotel.repository.HotelCardView;
+import com.company.project.hotel.repository.HotelDetailView;
+import com.company.project.hotel.repository.HotelFacilityView;
 import com.company.project.hotel.repository.HotelFilter;
 import com.company.project.hotel.repository.HotelJpql;
 import com.company.project.hotel.repository.HotelOfferView;
@@ -23,6 +26,7 @@ import com.company.project.hotel.repository.HotelRepositoryCustom;
 import com.company.project.hotel.repository.HotelSql;
 import com.company.project.hotel.repository.HotelSuggestionView;
 import com.company.project.hotel.repository.OfferLineView;
+import com.company.project.hotel.repository.RoomRateView;
 import com.company.project.hotel.repository.StayRequirement;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
@@ -40,7 +44,8 @@ import org.springframework.data.support.PageableExecutionUtils;
  * capacity; the SQL function {@code night_price()} per rate plan and night; one cheapest rate plan per room type
  * ({@code distinct on}); a running sum of free rooms to fill the requested rooms from the cheapest room type up; and
  * array columns of facilities, beds and room features for the filters. It returns ids, quantities and prices only;
- * JPQL loads the cards and the names.
+ * JPQL loads the cards and the names. The hotel page's room list is native for the same reason and reuses the chain's
+ * first steps ({@code nights}, {@code free_rooms}, {@code rate_offers}), so both agree on what can be sold.
  * <p>
  * Filters ({@link HotelFilterSql}) are predicates over the rows of that query, with fixed aliases: {@code c} = a
  * {@code hotel_rows} row, {@code o} = an {@code offers} row, {@code v} = an {@code available} or {@code results} row,
@@ -70,6 +75,42 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 			+ "join Destination d on d.id = :destinationId\nwhere " + HotelJpql.HOTEL_LISTED
 			+ "\n  and " + HotelJpql.ADDRESS_IN_DESTINATION
 			+ "\norder by h.userRatingAvg desc nulls last, h.googleRating desc nulls last, h.id";
+
+	// The COUNTRY destination row is joined only for its current name, like the place suggestions' labels.
+	private static final String DETAIL = """
+			select new com.company.project.hotel.repository.HotelDetailView(
+			       h.id, h.slug, h.name, t.code, t.name, h.starRating, h.description,
+			       a.line1, a.ward, a.district, a.city, a.countryCode, c.name, a.latitude, a.longitude,
+			       h.distanceToCenterM, h.googleRating, h.googleRatingCount, h.userRatingAvg, h.userRatingCount,
+			       h.checkInFrom, h.checkInUntil, h.checkOutUntil, h.minCheckInAge)
+			from Hotel h
+			join h.address a
+			join h.accommodationType t
+			left join Destination c on c.countryCode = a.countryCode and c.deletedAt is null
+			     and c.type = com.company.project.destination.model.DestinationType.COUNTRY
+			where h.slug = :slug and\s""" + HotelJpql.HOTEL_LISTED;
+
+	// Room photos only of room types that are on sale; one stored without a category counts as a room photo.
+	private static final String GALLERY = """
+			select new com.company.project.hotel.repository.GalleryPhotoView(
+			       p.url, coalesce(p.category, case when p.roomTypeId is not null then 'room' end), p.caption,
+			       p.roomTypeId)
+			from HotelPhoto p
+			left join RoomType rt on rt.id = p.roomTypeId
+			where p.hotel.id = :hotelId
+			  and (p.roomTypeId is null
+			       or (rt.status = com.company.project.hotel.model.ListingStatus.ACTIVE and rt.deletedAt is null))
+			order by case when p.roomTypeId is null then 0 else 1 end, p.cover desc, p.sortOrder, p.id""";
+
+	// Groups and names in the same order as the facility filter options.
+	private static final String FACILITIES = """
+			select new com.company.project.hotel.repository.HotelFacilityView(am.groupName, am.code, am.name, am.icon,
+			       f.free)
+			from Hotel h
+			join h.facilities f
+			join f.amenity am
+			where h.id = :hotelId and am.scope = com.company.project.hotel.model.AmenityScope.HOTEL
+			order by am.groupName, am.name""";
 
 	private static final String MAIN_CURRENCY_IN_DESTINATION = """
 			select h.currency
@@ -106,22 +147,27 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 	private static final String HOTEL_ROWS_END = "\n),\n";
 
 	/**
-	 * Rooms and rate plans of {@code candidate_hotels} that can sell {@code :rooms} rooms for every night of
-	 * {@code [:checkIn, :checkOut)}, and what the offer filters read.
-	 * <ul>
-	 * <li>{@code free_rooms}: fitting room types and their fewest free rooms on any night. Children may also use
-	 * places adults leave free.</li>
-	 * <li>{@code rate_offers}: their active rate plans in the hotel's currency, priced for the stay, without a closed
-	 * night and with the stay at least as long as the longest minimum stay of its nights.</li>
-	 * <li>{@code offers}: those plus board code, cancellation ({@code FREE} while free cancellation is still possible
-	 * at {@code :now}, {@code NON_REFUNDABLE}, else null) and the room type's bed and feature codes.</li>
-	 * </ul>
+	 * Room type {@code rt} holds the guests of one room, {@code :adultsPerRoom} adults and {@code :childrenPerRoom}
+	 * children; children may also use places adults leave free. The only definition of "fits": the search keeps only
+	 * fitting room types, the hotel page's room list reports it per room type.
 	 */
-	private static final String PRICED_OFFERS = """
+	private static final String ROOM_TYPE_FITS = """
+			rt.max_adults >= :adultsPerRoom
+			      and rt.max_occupancy >= :adultsPerRoom + :childrenPerRoom
+			      and :childrenPerRoom <= rt.max_children + (rt.max_adults - :adultsPerRoom)""";
+
+	/** {@code nights}: one row per night of {@code [:checkIn, :checkOut)}. */
+	private static final String NIGHTS = """
 			nights as (
 			    select cast(generate_series(cast(:checkIn as date), cast(:checkOut as date) - 1, interval '1 day') as date)
 			           as stay_date
-			),
+			)""";
+
+	/**
+	 * {@code free_rooms}: the active room types of {@code candidate_hotels} and their fewest free rooms on any night.
+	 * Append any extra room type condition (starting with {@code "\n      and "}) and {@link #FREE_ROOMS_END}.
+	 */
+	private static final String FREE_ROOMS = """
 			free_rooms as (
 			    select rt.hotel_id, rt.id as room_type_id,
 			           min(case when coalesce(i.is_closed, false) then 0
@@ -130,12 +176,19 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 			    join candidate_hotels c on c.id = rt.hotel_id
 			    cross join nights n
 			    left join room_inventory i on i.room_type_id = rt.id and i.stay_date = n.stay_date
-			    where rt.status = 'ACTIVE' and rt.deleted_at is null
-			      and rt.max_adults >= :adultsPerRoom
-			      and rt.max_occupancy >= :adultsPerRoom + :childrenPerRoom
-			      and :childrenPerRoom <= rt.max_children + (rt.max_adults - :adultsPerRoom)
+			    where rt.status = 'ACTIVE' and rt.deleted_at is null""";
+
+	private static final String FREE_ROOMS_END = """
+
 			    group by rt.hotel_id, rt.id
-			),
+			)""";
+
+	/**
+	 * {@code rate_offers}: the active rate plans of the {@code free_rooms} with a room free, in the hotel's currency,
+	 * priced for the stay, without a closed night and with the stay at least as long as the longest minimum stay of
+	 * its nights. The only definition of "can sell the stay", shared by the search and the room list.
+	 */
+	private static final String RATE_OFFERS = """
 			rate_offers as (
 			    select f.hotel_id, f.room_type_id, f.free, rp.id as rate_plan_id, rp.currency,
 			           cast(sum(night_price(rp.id, n.stay_date)) as bigint) as stay_price
@@ -149,7 +202,17 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 			    group by f.hotel_id, f.room_type_id, f.free, rp.id, rp.currency
 			    having not bool_or(coalesce(pp.is_closed, false))
 			       and max(coalesce(pp.min_nights, rp.min_nights)) <= :nights
-			),
+			)""";
+
+	/**
+	 * Rooms and rate plans of {@code candidate_hotels} that can sell {@code :rooms} rooms for every night of
+	 * {@code [:checkIn, :checkOut)}, and what the offer filters read: {@code nights}, {@code free_rooms} of the fitting
+	 * room types, {@code rate_offers}, and {@code offers}, which adds the board code, cancellation ({@code FREE} while
+	 * free cancellation is still possible at {@code :now}, {@code NON_REFUNDABLE}, else null) and the room type's bed
+	 * and feature codes.
+	 */
+	private static final String PRICED_OFFERS = NIGHTS + ",\n" + FREE_ROOMS + "\n      and " + ROOM_TYPE_FITS
+			+ FREE_ROOMS_END + ",\n" + RATE_OFFERS + ",\n" + """
 			offers as (
 			    select r.*, b.code as board_type,
 			           case when free_cancellation_until(cp.id, cast(:checkIn as date), h.check_in_from, h.timezone) > :now
@@ -170,6 +233,20 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 			    join hotels h on h.id = r.hotel_id
 			),
 			""";
+
+	/**
+	 * The room list of one hotel: every active room type is a candidate, fitting or not, and each rate plan that can
+	 * sell the stay is one row, fitting room types first, then cheapest first. {@code night_prices} calls
+	 * {@code night_price()} again for this hotel's plans only, for penalties counted in nights.
+	 */
+	private static final String ROOM_RATES = "with candidate_hotels as (select h.id from hotels h where h.id = :hotelId and "
+			+ HotelSql.HOTEL_LISTED + "),\n" + NIGHTS + ",\n" + FREE_ROOMS + FREE_ROOMS_END + ",\n" + RATE_OFFERS + """
+
+			select r.room_type_id, r.rate_plan_id, r.free, (%s) as fits, r.stay_price,
+			       array(select night_price(r.rate_plan_id, n.stay_date) from nights n order by n.stay_date) as night_prices
+			from rate_offers r
+			join room_types rt on rt.id = r.room_type_id
+			order by fits desc, r.stay_price, rt.sort_order, rt.id, r.rate_plan_id""".formatted(ROOM_TYPE_FITS);
 
 	/** Opens {@code scoped_offers} with the offers the results use; append the offer predicates and {@code ")"}. */
 	private static final String ALL_SCOPE = """
@@ -346,6 +423,26 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 	}
 
 	@Override
+	public Optional<HotelDetailView> findDetail(String slug) {
+		return entityManager.createQuery(DETAIL, HotelDetailView.class)
+			.setParameter("slug", slug)
+			.getResultStream()
+			.findFirst();
+	}
+
+	@Override
+	public List<GalleryPhotoView> findGallery(long hotelId) {
+		return entityManager.createQuery(GALLERY, GalleryPhotoView.class).setParameter("hotelId", hotelId).getResultList();
+	}
+
+	@Override
+	public List<HotelFacilityView> findFacilities(long hotelId) {
+		return entityManager.createQuery(FACILITIES, HotelFacilityView.class)
+			.setParameter("hotelId", hotelId)
+			.getResultList();
+	}
+
+	@Override
 	public Optional<String> findMainCurrencyInDestination(long destinationId) {
 		return entityManager.createQuery(MAIN_CURRENCY_IN_DESTINATION, String.class)
 			.setParameter("destinationId", destinationId)
@@ -364,6 +461,24 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 	public Page<HotelOfferView> findAvailableHotel(long hotelId, StayRequirement stay, HotelFilter filter,
 			HotelOrder order, Pageable pageable) {
 		return availableOffers(IS_HOTEL, hotelId, stay, filter, order, pageable);
+	}
+
+	@Override
+	@SuppressWarnings("unchecked") // a native query without a result class returns Object[] rows
+	public List<RoomRateView> findRoomRates(long hotelId, StayRequirement stay) {
+		// Only the parameters the text uses: Hibernate rejects binding any other.
+		List<Object[]> rows = entityManager.createNativeQuery(ROOM_RATES)
+			.setParameter("hotelId", hotelId)
+			.setParameter("checkIn", stay.checkIn())
+			.setParameter("checkOut", stay.checkOut())
+			.setParameter("nights", stay.nights())
+			.setParameter("adultsPerRoom", stay.adultsPerRoom())
+			.setParameter("childrenPerRoom", stay.childrenPerRoom())
+			.getResultList();
+		return rows.stream()
+			.map(row -> new RoomRateView(((Number) row[0]).longValue(), ((Number) row[1]).longValue(),
+					((Number) row[2]).intValue(), (Boolean) row[3], ((Number) row[4]).longValue(), nightPrices(row[5])))
+			.toList();
 	}
 
 	@Override
@@ -490,6 +605,11 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 	private static String threshold(FilterGroup group, String condition, String price, HotelFilterSql filters) {
 		return COUNT_BY_THRESHOLD.formatted(group.name(), String.join(", ", group.optionValues()), condition, price,
 				filters.hotelPredicates(group));
+	}
+
+	// Hibernate hands a SQL bigint[] column of a native query back as a Long[].
+	private static List<Long> nightPrices(Object column) {
+		return List.of((Long[]) column);
 	}
 
 	private static Query bind(Query query, long locationId, StayRequirement stay, HotelFilter filter) {

@@ -3,6 +3,7 @@ package com.company.project.rate.repository.impl;
 import java.util.Collection;
 import java.util.List;
 
+import com.company.project.rate.repository.CancellationRuleView;
 import com.company.project.rate.repository.RateOfferView;
 import com.company.project.rate.repository.RatePlanRepositoryCustom;
 import jakarta.persistence.EntityManager;
@@ -29,11 +30,26 @@ public class RatePlanRepositoryImpl implements RatePlanRepositoryCustom {
 			join rp.cancellationPolicy cp
 			where rp.id in :ids""";
 
+	private static final String CANCELLATION_RULES = """
+			select new com.company.project.rate.repository.CancellationRuleView(
+			       rp.id, r.hoursBeforeCheckIn, r.penaltyType, r.penaltyValue)
+			from RatePlan rp
+			join CancellationPolicyRule r on r.policy = rp.cancellationPolicy
+			where rp.id in :ids
+			order by rp.id, r.hoursBeforeCheckIn""";
+
 	private final EntityManager entityManager;
 
 	@Override
 	public List<RateOfferView> findOfferDetails(Collection<Long> ratePlanIds) {
 		return entityManager.createQuery(OFFER_DETAILS, RateOfferView.class)
+			.setParameter("ids", ratePlanIds)
+			.getResultList();
+	}
+
+	@Override
+	public List<CancellationRuleView> findCancellationRules(Collection<Long> ratePlanIds) {
+		return entityManager.createQuery(CANCELLATION_RULES, CancellationRuleView.class)
 			.setParameter("ids", ratePlanIds)
 			.getResultList();
 	}

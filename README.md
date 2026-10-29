@@ -10,7 +10,9 @@ result list (C-SRCH-01) with its filters, filter counts and sorting (C-SRCH-02/0
 curate those destinations. See [Search and destinations](#search-and-destinations). Customer accounts
 (C-AUTH-01/02/04/05/06) have email verification, sign-in sessions per device, lockout, password reset and a profile.
 See [Accounts and sessions](#accounts-and-sessions). Signed-in customers can save hotels to a wishlist (C-SRCH-08).
-See [Wishlist](#wishlist).
+See [Wishlist](#wishlist). Each hotel has a public page: overview, facilities and policies, the rooms and rates for a
+stay with their cancellation penalties, and reviews (C-HOTEL-01/02/03/04/06/07). See
+[Hotel detail page](#hotel-detail-page).
 
 ## Stack
 
@@ -113,6 +115,9 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 | GET | `/api/search/hotels/filters?` (same parameters, no paging) | public | every filter option with its hotel count, price range per night |
 | GET | `/api/destinations/popular?limit=&hotels=` | public | featured destinations with their best hotels; max 20 × 10 |
 | GET | `/api/destinations/{slug}` | public | 404 if missing |
+| GET | `/api/hotels/{slug}` | public | overview, gallery, address, facilities, policies; 404 unknown or unlisted hotel |
+| GET | `/api/hotels/{slug}/rooms?checkIn=&checkOut=&rooms=&adults=&childAges=` | public | sellable room types with every rate, rooms left and cancellation penalties; 400 invalid stay, 404 as above |
+| GET | `/api/hotels/{slug}/reviews?page=&size=&sort=` | public | paged published reviews, newest first; `sort` by `createdAt` or `score`, else 400; 404 as above |
 | GET | `/api/wishlist?page=&size=` | authenticated | paged saved hotels as cards, newest first, each with `available` and `savedAt` |
 | PUT | `/api/wishlist/{hotelId}` | authenticated | 204 whether new or already saved; 404 unknown or unlisted hotel |
 | DELETE | `/api/wishlist/{hotelId}` | authenticated | always 204 |
@@ -300,8 +305,11 @@ curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applica
 
 **Demo data.** Under the `local` profile Flyway also runs `db/seed/R__demo_catalog.sql`: 9 fictional hotels in Đà
 Nẵng, Hồ Chí Minh, Hà Nội and Hội An (one inactive hotel in Huế), and those four cities featured. The hotels have
-distances to the centre and facilities, and their room types have beds and room features. The `test` and
-`prod` profiles never load it. `docker compose down -v` resets it.
+distances to the centre and facilities, and their room types have beds and room features. For the hotel page they
+also have descriptions, map coordinates, gallery photos with categories (lobby, restaurant, pool), room sizes and
+photos, and six policies each. Mỹ Khê's room-only rates use a two-tier cancellation policy (free until 72 hours before
+check-in, then half the stay, then all of it in the last 24 hours). There are no reviews: nothing can write one yet.
+The `test` and `prod` profiles never load it. `docker compose down -v` resets it.
 
 ## Wishlist
 
@@ -328,6 +336,65 @@ Deleting a user or a hotel row deletes its wishlist entries (`on delete cascade`
 curl -s -X PUT -H "Authorization: Bearer $TOKEN" $BASE/api/wishlist/1
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/wishlist?page=0&size=20"
 curl -s -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/api/wishlist/1
+```
+
+## Hotel detail page
+
+A search result links to its hotel by `slug` with the search's query parameters. The page's three endpoints are
+public and answer 404 for a hotel that doesn't exist or isn't listed (`ACTIVE`, not deleted).
+
+**Overview** (`GET /api/hotels/{slug}`, C-HOTEL-01/02/03) needs no dates:
+
+- Name, type, stars, description, Google and user ratings (the stored `user_rating_avg`/`_count`, as in search) and
+  the distance to the centre.
+- `address`: the parts, the coordinates for the map (both null when unknown) and `formatted`, the parts that exist
+  from street to country: `120 Võ Nguyên Giáp, Phước Mỹ, Sơn Trà, Đà Nẵng, Vietnam`. The province is left out. The
+  country name comes from the COUNTRY destination, like suggestion labels; until the sync has named it, the code
+  stands in.
+- `photos`: the gallery. Hotel photos come first (cover first, then `sort_order`), then the photos of room types on
+  sale. Each has `category` (pool, lobby...; a room photo without one says `room`), `caption` and `roomTypeId`.
+- `facilities`: the hotel's amenities grouped under their headings (General, Wellness...), each `free` or not.
+- `policies`: `checkInFrom`, `checkInUntil`, `checkOutUntil` (wall-clock times in the hotel's zone), `minCheckInAge`
+  and `rules`, the hotel's policy paragraphs in its order. Types: `CHILDREN`, `EXTRA_BED`, `PETS`, `SMOKING`,
+  `DEPOSIT` (ID and deposit), `PAYMENT` (methods accepted at the property), `OTHER`. There is no write API for them
+  yet.
+
+**Rooms** (`GET /api/hotels/{slug}/rooms`, C-HOTEL-04) takes the search's stay parameters with the same rules and
+400s, so changing the dates on the page (C-HOTEL-05) is calling it again. It lists every room type with a room free on
+every night, each with every rate plan that can sell the stay. "Free" and "can sell" are the search's own SQL
+(`HotelRepositoryImpl`), so sold-out room types and unsellable plans are not listed.
+
+- `roomsLeft` is the fewest free rooms on any night, shared by all the room type's rates: the most a guest can pick
+  of that room type.
+- `fitsGuests` tells whether one room holds the guests of one room when they are split evenly, as in search. Room
+  types that don't fit are listed last, not hidden, so a guest can still mix room types.
+- Each room type has its size, description, beds, room features and photos. Rates are cheapest first, and room types
+  follow their cheapest rate.
+- Prices are per room, in the hotel's currency: `totalPrice` for the stay and `pricePerNight`, the average rounded
+  half up. `taxesIncluded` follows the search rule. For one room, the cheapest fitting rate is the offer the search
+  card shows.
+
+**Cancellation** (C-HOTEL-06). Each rate has `refundable`, `policyName`, `freeUntil` (the card's deadline) and
+`penalties`: what cancelling one room costs after that, in time order (`CancellationSchedule`).
+
+- A rule "less than N hours before check-in costs X" applies from check-in minus N hours until the next smaller
+  rule starts. The smallest rule also covers cancelling after check-in and a no-show, so its `until` is null.
+  `from` is null for the penalty already in effect, and penalties that are over are left out.
+- Amounts are capped at the stay. `PERCENT` is that share of the stay. `NIGHTS` is the first N nights, with a fraction
+  of a night charged pro rata. `FIXED` is an amount in the rate's currency.
+- A non-refundable rate has one penalty with `from` and `until` both null. A refundable rate without paid rules is
+  free until check-in and has no penalties.
+
+**Reviews** (`GET /api/hotels/{slug}/reviews`, C-HOTEL-07) are paged, published only and newest first. `sort=score`
+or `sort=createdAt`, either direction, with ties going to the newest. Any other sort property gives 400. Each review
+has `score` (1–10), `title`, `body`, `travellerType`, `createdAt` and the hotel's `ownerReply`. Reviews don't name
+their author. Only customers with a completed stay will write them (C-MYBK-05), so until bookings exist the list is
+always empty.
+
+```bash
+curl -s "$BASE/api/hotels/my-khe-beach-resort-demo"
+curl -s "$BASE/api/hotels/my-khe-beach-resort-demo/rooms?checkIn=2026-11-01&checkOut=2026-11-03&rooms=1&adults=2"
+curl -s "$BASE/api/hotels/my-khe-beach-resort-demo/reviews?sort=score,desc"
 ```
 
 ## Tests
@@ -372,6 +439,14 @@ curl -s -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/api/wishlist/1
 | `DestinationServiceImplTest` | unit | featured order, fallback to top cities, limits |
 | `WishlistControllerTest` | full app | saving twice keeps one entry and its first `savedAt`, newest first and paging, idempotent remove, only listed hotels can be saved, delisted hotels stay as unavailable, one list per user, sign-in required |
 | `WishlistServiceImplTest` | unit | 404 without an insert, list keeps the entry order and availability, empty page skips the card query |
+| `HotelControllerTest` | full app | overview fields, formatted address with the country's name or code, gallery order and categories, grouped and paid facilities, times and policies, only listed hotels |
+| `HotelControllerRoomsTest` | full app | every sellable rate (inactive, other-currency, closed and too-long-minimum-stay plans left out), rooms left, sold-out and withdrawn room types hidden, unfit room types last and marked, even split, room details, night prices and average, tax flag, cheapest fitting rate equal to the search card, penalty timelines, invalid stays |
+| `HotelMapperTest` | unit | address formatting, facility group order |
+| `HotelServiceImplTest` | unit | nothing sellable skips the room and rate queries, 404 and 400 before pricing |
+| `CancellationScheduleTest` | unit | tiers from the rules' hours, first tier at `FreeCancellation`'s deadline, non-refundable, passed tiers, nights, fixed and percent amounts capped at the stay, free rules, daylight saving |
+| `ReviewControllerTest` | full app | newest first with every field, score and date sorts with ties newest first, hidden and other hotels' reviews never listed or counted, unsupported sort, only listed hotels |
+| `ReviewRepositoryTest` | full app | one review per booking, score range, enum CHECKs, published reviews of one hotel |
+| `ReviewServiceImplTest` | unit | default and tie-break order, unsupported sort and unknown hotel before any review query |
 
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
 Full-app tests use `@IntegrationTest` (`src/test/.../support`). Every class shares one Spring context and one
@@ -381,7 +456,8 @@ container, so the suite stays fast. Tests create their own data with unique emai
 Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, then call the destination sync
 themselves (the `test` profile never schedules it). `CatalogFixtures.roomType` also adds a sellable rate plan
 (`bareRoomType` adds none). `hotelAmenity`, `roomAmenity` and `bed` attach V6 reference rows. Tax rules apply to a whole country, so tax tests use their own user-assigned country codes
-(`XA`–`XZ`). Unit tests use Mockito and start no Spring context.
+(`XA`–`XZ`). `review` inserts reviews with a made-up `booking_id` (no bookings table yet), written by a `user()` that
+can't sign in. Unit tests use Mockito and start no Spring context.
 
 `TestProjectApplication` (in `src/test`) runs the app against a Testcontainers database instead of Docker Compose.
 
@@ -407,8 +483,9 @@ src/main/java/com/company/project/
 │   └── bootstrap/                       first admin account on startup
 ├── product/                             sample feature: copy this shape
 │   └── controller/  model/  repository/  dto/  mapper/  services/ (+ impl/)
-├── hotel/                               hotel catalog read model: entities, amenities, bed types, HotelRepository
-│   └── model/  repository/ (+ impl/)    (priced availability, filters, filter counts), shared query fragments
+├── hotel/                               hotel catalog: entities, amenities, beds, policies, HotelRepository (priced
+│   │                                    availability, filters, filter counts, room list), shared query fragments
+│   └── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)   hotel page endpoints
 ├── rate/                                rate plans, board types, cancellation policies (read model)
 │   └── model/  repository/ (+ impl/)
 ├── tax/                                 tax rules per country (read model)
@@ -416,17 +493,20 @@ src/main/java/com/company/project/
 ├── destination/                         destinations: sync, popular, lookup, admin curation
 │   ├── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
 │   └── sync/                            scheduled and on-startup destination sync
-├── search/                              homepage search: suggestions, result list with prices, filters, sorting
+├── search/                              homepage search: suggestions, result list with prices, filters, sorting;
+│   │                                    stay rules and cancellation terms the hotel page shares
 │   └── controller/  config/  model/  dto/  mapper/  services/ (+ impl/)
-└── wishlist/                            each user's saved hotels
-    └── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
+├── wishlist/                            each user's saved hotels
+│   └── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
+└── review/                              hotel reviews, read on the hotel page
+    └── controller/  model/  repository/  dto/  mapper/  services/ (+ impl/)
 src/main/resources/
 ├── application.yml                      defaults for every profile
 ├── application-local.yml                local dev (the default profile): .env, Docker Compose, demo seed
 ├── application-prod.yml                 production overrides
 ├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions,
 │                                        V5 rates + taxes + night_price(), V6 amenities + beds +
-│                                        free_cancellation_until(), V7 wishlists
+│                                        free_cancellation_until(), V7 wishlists, V8 hotel policies + reviews
 └── db/seed/R__demo_catalog.sql          demo hotels, local profile only
 ```
 
@@ -530,9 +610,10 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 2. Rename `groupId`/`artifactId`/`name` in `pom.xml`, the `com.company.project` package (and `ProjectApplication`
    if you like), and `spring.application.name`.
 3. Delete or replace the `product` feature and `V2__create_product_tables.sql`, and the hotel features if you don't
-   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `wishlist/`, `SchedulingConfig`,
+   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `wishlist/`, `review/`, `SchedulingConfig`,
    `V3__create_hotel_catalog_tables.sql`, `V5__create_rate_and_tax_tables.sql`, `V6__create_amenity_and_bed_tables.sql`,
-   `V7__create_wishlist_table.sql`, `db/seed/`, the `app.search` / `app.destinations` settings and their `SecurityConfig` matchers). If the copy is
+   `V7__create_wishlist_table.sql`, `V8__create_hotel_policy_and_review_tables.sql`, `db/seed/`, the `app.search` /
+   `app.destinations` settings and their `SecurityConfig` matchers). If the copy is
    brand new and has never run, you may renumber migrations.
 4. `git init`.
 
@@ -563,6 +644,13 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 - **A hotel's `timezone` must be a valid IANA zone.** Search reads it to place the free-cancellation deadline (in Java
   for the cards, in the SQL function `free_cancellation_until()` for the `cancellation` filter), and an
   invalid value fails the request with a 500. The hotel write API (O-HOTEL-01) must validate it.
-- **Public search endpoints still reject a bad token.** A request to `/api/search/**` or `/api/destinations/**` with
-  an expired or invalid `Authorization` header gets 401; clients should drop expired tokens. The public account
-  endpoints (`/api/auth/login`, `/refresh`, `/logout`, …) ignore the header.
+- **Public search endpoints still reject a bad token.** A request to `/api/search/**`, `/api/destinations/**` or
+  `/api/hotels/**` with an expired or invalid `Authorization` header gets 401; clients should drop expired tokens. The
+  public account endpoints (`/api/auth/login`, `/refresh`, `/logout`, …) ignore the header.
+- **Reviews are read-only and the hotel ratings are stored, not computed.** Nothing writes reviews until customers
+  can complete stays (C-MYBK-05), so `/reviews` is empty outside tests. `reviews.booking_id` has no foreign key until
+  the `bookings` table exists, and `user_rating_avg`/`user_rating_count` on hotels are not recomputed from reviews.
+- **Hotel page terms that later stories may change.** A `FIXED` cancellation penalty is per room, like the prices, and
+  a fractional `NIGHTS` penalty is charged pro rata; refunds (C-MYBK-03) will settle both. `fitsGuests` uses the
+  search's even split, so a room type that would work in an uneven mix shows `false`. `roomsLeft` is the exact count;
+  the client decides when to say "Only N left".

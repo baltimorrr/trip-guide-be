@@ -3,9 +3,13 @@ package com.company.project.hotel.model;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.List;
 
 import com.company.project.common.model.BaseEntity;
+import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -21,8 +25,8 @@ import org.hibernate.annotations.JdbcType;
 import org.hibernate.type.descriptor.jdbc.LocalTimeJdbcType;
 
 /**
- * A hotel listing, read by search and the homepage. Hotels are not created through JPA yet, so this maps
- * only the columns those queries read; the hotel owner stories (O-HOTEL-*) add the rest with the writes.
+ * A hotel listing, read by search, the homepage and the hotel page. Hotels are not created through JPA yet, so this
+ * maps only the columns those queries read; the hotel owner stories (O-HOTEL-*) add the rest with the writes.
  */
 @Entity
 @Table(name = "hotels")
@@ -35,6 +39,8 @@ public class Hotel extends BaseEntity {
 
 	@Column(nullable = false, length = 220)
 	private String slug;
+
+	private String description;
 
 	@Column(name = "star_rating")
 	private Short starRating;
@@ -75,6 +81,23 @@ public class Hotel extends BaseEntity {
 	@JdbcType(LocalTimeJdbcType.class)
 	@Column(name = "check_in_from", nullable = false)
 	private LocalTime checkInFrom;
+
+	// Wall-clock times like checkInFrom, read the same way. Null checkInUntil: check-in has no latest time.
+	@JdbcType(LocalTimeJdbcType.class)
+	@Column(name = "check_in_until")
+	private LocalTime checkInUntil;
+
+	@JdbcType(LocalTimeJdbcType.class)
+	@Column(name = "check_out_until", nullable = false)
+	private LocalTime checkOutUntil;
+
+	@Column(name = "min_check_in_age")
+	private Short minCheckInAge;
+
+	/** Facilities the hotel offers ({@code hotel_amenities}); read only through JPQL joins, never loaded by search. */
+	@ElementCollection
+	@CollectionTable(name = "hotel_amenities", joinColumns = @JoinColumn(name = "hotel_id"))
+	private List<HotelFacility> facilities = new ArrayList<>();
 
 	@Enumerated(EnumType.STRING)
 	@Column(nullable = false, length = 20)

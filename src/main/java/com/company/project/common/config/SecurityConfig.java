@@ -58,8 +58,10 @@ public class SecurityConfig {
 				.formLogin(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(auth -> auth
 						.requestMatchers(PUBLIC_AUTH_ENDPOINTS).permitAll()
-						// Homepage: guests search without an account.
-						.requestMatchers(HttpMethod.GET, "/api/search/**", "/api/destinations/**").permitAll()
+						// Homepage and hotel pages: guests search and browse without an account. Keep authenticated
+						// hotel endpoints (owners, admins) out of /api/hotels.
+						.requestMatchers(HttpMethod.GET, "/api/search/**", "/api/destinations/**", "/api/hotels/**")
+						.permitAll()
 						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
 						// API docs; the prod profile switches springdoc off entirely.
 						.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()

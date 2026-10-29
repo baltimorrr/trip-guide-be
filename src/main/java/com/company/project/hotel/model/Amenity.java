@@ -12,8 +12,8 @@ import lombok.NoArgsConstructor;
 
 /**
  * Reference data seeded by migration V6: hotel facilities (wifi, pool...) and room features (balcony, sea view...).
- * Hotels and room types link to it through {@code hotel_amenities} and {@code room_type_amenities}, which only the
- * search's native SQL reads, so they have no entity.
+ * Hotels and room types link to it through {@code hotel_amenities} ({@link Hotel#getFacilities()}) and
+ * {@code room_type_amenities} ({@link RoomType#getFeatures()}); the search filters read those tables in native SQL.
  */
 @Entity
 @Table(name = "amenities")
