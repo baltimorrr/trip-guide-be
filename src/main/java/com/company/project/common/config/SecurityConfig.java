@@ -4,6 +4,9 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import com.company.project.common.exception.ProblemDetailSecurityHandler;
+import com.company.project.common.ratelimit.RateLimitFilter;
+import com.company.project.common.ratelimit.RateLimitProperties;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -28,6 +31,8 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.filter.CorsFilter;
+import org.springframework.web.servlet.HandlerExceptionResolver;
 
 /**
  * Stateless API security: every request carries {@code Authorization: Bearer <jwt>}, except
@@ -46,7 +51,8 @@ public class SecurityConfig {
 
 	@Bean
 	SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter jwtAuthenticationConverter,
-			ProblemDetailSecurityHandler problemHandler) throws Exception {
+			ProblemDetailSecurityHandler problemHandler, RateLimitProperties rateLimits,
+			@Qualifier("handlerExceptionResolver") HandlerExceptionResolver exceptionResolver) throws Exception {
 		DefaultBearerTokenResolver bearerTokens = new DefaultBearerTokenResolver();
 		http
 				// No cookies or sessions: the token travels in a header, so CSRF cannot apply.
@@ -78,6 +84,11 @@ public class SecurityConfig {
 				.exceptionHandling(exceptions -> exceptions
 						.authenticationEntryPoint(problemHandler)
 						.accessDeniedHandler(problemHandler));
+		// After CORS, so a 429 carries the CORS headers and valid preflights (answered by CorsFilter) aren't counted.
+		// Before authentication, so a flood of bad tokens is cut off before JWT checks and the session lookup.
+		if (rateLimits.enabled()) {
+			http.addFilterAfter(new RateLimitFilter(rateLimits, exceptionResolver), CorsFilter.class);
+		}
 		return http.build();
 	}
 

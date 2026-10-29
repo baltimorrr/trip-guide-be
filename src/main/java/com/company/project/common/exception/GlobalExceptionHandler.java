@@ -101,6 +101,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 		return problem(HttpStatus.FORBIDDEN, "Access denied");
 	}
 
+	// Raised by RateLimitFilter before the request reaches a controller. Retry-After says when one more is allowed.
+	@ExceptionHandler(RateLimitExceededException.class)
+	ResponseEntity<ProblemDetail> handleRateLimit(RateLimitExceededException ex) {
+		return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+			.header(HttpHeaders.RETRY_AFTER, Long.toString(ex.getRetryAfterSeconds()))
+			.body(problem(HttpStatus.TOO_MANY_REQUESTS, "Too many requests, retry later"));
+	}
+
 	@ExceptionHandler(Exception.class)
 	ProblemDetail handleUnexpected(Exception ex) {
 		log.error("Unexpected error", ex);

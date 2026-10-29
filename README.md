@@ -134,6 +134,22 @@ Every error is `application/problem+json` (RFC 9457):
  "errors": [{"field": "price", "message": "must be greater than or equal to 0.00"}]}
 ```
 
+**Rate limits.** Every request is limited per client IP (an IPv6 client by its /64). Some endpoints have a stricter
+limit on top. Endpoints listed together share one count:
+
+| Limit | Requests | Per client IP |
+|-------|----------|---------------|
+| `general` | every request except `/actuator/health` | 300 per minute |
+| `login` | `POST /api/auth/login` | 10 per minute |
+| `register` | `POST /api/auth/register` | 10 per hour |
+| `email` | `POST /api/auth/verify-email/resend`, `POST /api/auth/password/forgot` | 10 per hour |
+| `search` | `GET /api/search/hotels`, `/api/search/hotels/filters`, `/api/hotels/{slug}/rooms` | 60 per minute |
+
+A request under a specific limit also counts toward `general`. Counts come back gradually, not all at once: after 10
+sign-ins, one more is allowed every 6 seconds. Over a limit, the API answers `429` problem+json
+`"Too many requests, retry later"` with a `Retry-After` header (seconds). The check runs before the token, the body
+and the password are checked, and after CORS, so browser code can read the 429.
+
 ## Accounts and sessions
 
 **Sign-up.** Passwords need 8–72 characters with a letter and a digit (and at most 72 bytes). A new account starts
@@ -447,6 +463,8 @@ curl -s "$BASE/api/hotels/my-khe-beach-resort-demo/reviews?sort=score,desc"
 | `ReviewControllerTest` | full app | newest first with every field, score and date sorts with ties newest first, hidden and other hotels' reviews never listed or counted, unsupported sort, only listed hotels |
 | `ReviewRepositoryTest` | full app | one review per booking, score range, enum CHECKs, published reviews of one hotel |
 | `ReviewServiceImplTest` | unit | default and tie-break order, unsupported sort and unknown hotel before any review query |
+| `RateLimitFilterTest` | full app | each limit enforced with 429 problem+json and `Retry-After`, before the body is read, per address, shared buckets, 401s count, health never limited |
+| `RateLimiterTest` | unit | capacity, gradual refill, rounded-up wait, separate buckets per client and limit, IPv6 /64 and IPv4-mapped client keys |
 
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
 Full-app tests use `@IntegrationTest` (`src/test/.../support`). Every class shares one Spring context and one
@@ -457,7 +475,8 @@ Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, 
 themselves (the `test` profile never schedules it). `CatalogFixtures.roomType` also adds a sellable rate plan
 (`bareRoomType` adds none). `hotelAmenity`, `roomAmenity` and `bed` attach V6 reference rows. Tax rules apply to a whole country, so tax tests use their own user-assigned country codes
 (`XA`–`XZ`). `review` inserts reviews with a made-up `booking_id` (no bookings table yet), written by a `user()` that
-can't sign in. Unit tests use Mockito and start no Spring context.
+can't sign in. The `test` profile exempts MockMvc's `127.0.0.1` from rate limits, so `RateLimitFilterTest` sends
+from its own `203.0.113.x` addresses. Unit tests use Mockito and start no Spring context.
 
 `TestProjectApplication` (in `src/test`) runs the app against a Testcontainers database instead of Docker Compose.
 
@@ -469,9 +488,11 @@ src/main/java/com/company/project/
 ├── common/                              shared by every feature; imports no feature package
 │   ├── config/                          SecurityConfig, OpenApiConfig (API docs), JpaAuditingConfig, SchedulingConfig
 │   ├── persistence/                     DatabaseFunctionContributor: norm() callable from JPQL
+│   ├── ratelimit/                       RateLimitFilter, RateLimitPolicy (which requests), RateLimiter (buckets)
 │   ├── validation/                      @StrongPassword, @PhoneNumber, @IsoCountry, @IsoCurrency
 │   ├── dto/                             PageResponse (paged list body: {content, page}), Money
 │   ├── exception/                       GlobalExceptionHandler, BusinessException, ResourceNotFoundException,
+│   │                                    RateLimitExceededException (429),
 │   │                                    ProblemDetailSecurityHandler (401/403 → problem+json)
 │   └── model/BaseEntity.java            id, version, createdAt, updatedAt
 ├── auth/                                sign-up, verification, sign-in sessions, passwords, profile endpoints
@@ -549,7 +570,8 @@ endpoints live in `auth/`.
    `@Transactional(readOnly = true)` on the class and `@Transactional` on writes. Throw `ResourceNotFoundException`
    or `BusinessException(HttpStatus.CONFLICT, ...)` (any status).
 7. **Controller**: `thing/controller/ThingController`, `/api/things`, injecting `ThingService`, `@Valid @RequestBody`,
-   `@PreAuthorize("hasRole('ADMIN')")` where needed. Return `PageResponse.from(page)` for lists.
+   `@PreAuthorize("hasRole('ADMIN')")` where needed. Return `PageResponse.from(page)` for lists. An endpoint that
+   is expensive (heavy SQL) or abusable (sends email, checks a secret) also gets a matcher in `RateLimitPolicy`.
 8. **Tests**: `controller/ThingControllerTest` (`@IntegrationTest`, `TestAuth` for tokens) and
    `services/impl/ThingServiceImplTest` (Mockito).
 
@@ -581,12 +603,15 @@ Profiles: `local` is the default when none is set (reads `.env`, starts Docker C
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_PORT` | app / app / required / 5432 | local Compose database |
 | `APP_DESTINATIONS_SYNC_CRON` | `0 */10 * * * *` | destination sync schedule (Spring cron, six fields); `-` disables it |
 | `APP_DESTINATIONS_SYNC_ON_STARTUP` | `true` | run the destination sync once when the app is ready |
+| `APP_RATE_LIMIT_ENABLED` | `true` | `false` turns every rate limit off, e.g. when a gateway limits instead |
+| `APP_RATE_LIMIT_EXEMPT_ADDRESSES` | empty | comma-separated client addresses never limited, e.g. an internal monitor; `127.0.0.1` in a local `.env` keeps you from limiting yourself |
 
 Access token lifetime is `app.jwt.access-token-ttl` (default `15m`) in `application.yml`. Account settings are
 `app.auth.*` there: `refresh-token-ttl` 1d, `remember-me-ttl` 30d, `email-verification-ttl` 24h,
 `password-reset-ttl` 30m, `email-cooldown` 1m, and `lockout` (`max-attempts` 5, `window` 15m, `duration` 15m). Search limits are `app.search.*`
 there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `max-children` 10,
-`rating-sort-min-reviews` 10).
+`rating-sort-min-reviews` 10). Rate limits are `app.rate-limit.limits.*` there (`capacity` per `period`, values in the
+table under Endpoints), and `max-tracked-clients` (50000) caps how many clients each limit remembers.
 
 ## Production notes
 
@@ -598,7 +623,11 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 - Provide `APP_JWT_SECRET` from a secret manager. Changing it invalidates every issued token.
 - Set `APP_FRONTEND_URL` to the web app, and wire a real `AuthMailer` before real users sign up (see Known
   limitations).
-- Behind a reverse proxy, set `server.forward-headers-strategy` so sessions record the client's IP, not the proxy's.
+- Behind a reverse proxy, set `server.forward-headers-strategy=native`. Without it, every request seems to come from
+  the proxy: all clients share one set of rate limits (the whole site gets 429s), and sessions record the proxy's IP.
+  `native` trusts `X-Forwarded-For` only from proxies with private addresses (Tomcat's `internal-proxies`). Set
+  `server.tomcat.remoteip.internal-proxies` if yours has a public one. Never let clients reach the app directly while
+  forwarded headers are trusted, or they can pick their own IP.
 - Migration V3 creates the `unaccent` and `pg_trgm` extensions. Both are trusted extensions, so the database role
   needs CREATE on the database but not superuser.
 
@@ -621,8 +650,11 @@ there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `m
 
 - **Emails are not sent.** Verification and reset links are written to the log at INFO in every profile, so anyone
   who can read the log can reset any password. Replace `LoggingAuthMailer` before launch.
-- **No per-IP rate limiting.** Accounts lock after repeated failures, but nothing limits one client trying many
-  emails, and anyone can lock a known email for 15 minutes. Add a limiter (e.g. Bucket4j or at the gateway).
+- **Rate limits are kept in memory, per instance.** With N instances a client gets N times each limit, and a restart
+  resets every count. Shared counts need a store all instances use (Redis, or a table in PostgreSQL).
+- **Rate limits are per IP.** Many users behind one NAT (offices, mobile carriers) share one set of limits. An
+  attacker with many IPs still gets each IP's full limits, so they can still lock known accounts for 15 minutes
+  (only a CAPTCHA or growing delays would stop that).
 - **Registration reveals whether an email exists** (409). Login, forgot password and resend do not, apart from
   response time (a known email does more work).
 - **Two concurrent refreshes of one token sign that device out** (the second looks like a replay). Clients should

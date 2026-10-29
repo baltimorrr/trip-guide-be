@@ -16,6 +16,10 @@ app:
     email-cooldown: 0s
   cors:
     allowed-origins: ""
+  rate-limit:
+    # MockMvc's address. Other tests sign in and search far more than the limits allow; rate limit tests send from
+    # their own addresses instead.
+    exempt-addresses: 127.0.0.1
   destinations:
     sync:
       # Tests call DestinationSyncService.sync() themselves; a background run would race with them.

@@ -34,7 +34,10 @@ so it no longer matches that `schema.sql`. **Decided (2026-10-22), sessions:** o
 the refresh token travels in the JSON body and rotates on every refresh; replaying the previous token revokes the
 session (`previous_token_hash`); access tokens carry `sid` and are checked against the session on every request
 (immediate revocation). `users`/`user_sessions` gained columns the doc lacked (`first_failed_login_at`,
-`previous_token_hash`, `last_used_at`; `ip` is varchar), and the doc was edited to match. Still open: roles
+`previous_token_hash`, `last_used_at`; `ip` is varchar), and the doc was edited to match. **Decided (2026-10-30),
+rate limiting:** every request is limited per client IP (IPv6 by its /64), with stricter limits on sign-in,
+registration, the email-sending endpoints and the priced search. Counts live in memory per instance (Bucket4j +
+Caffeine), not in a shared store. Still open: roles
 (`customer/hotel_owner/hotel_staff/admin` vs code's `USER/ADMIN`). Ask before changing it.
 
 ## Commands
@@ -96,10 +99,23 @@ Account rules worth knowing before changing them:
 - `DataIntegrityViolationException` and optimistic-lock failures → 409
 - unknown sort properties → 400
 - authentication failures → 401, with one message for every login failure
+- `RateLimitExceededException` → 429 with `Retry-After`
 
 Anything unmatched becomes a generic 500, so a new exception type needs its own handler there. Security errors raised
 in the filter chain (missing or invalid token, 403) never reach a controller. `ProblemDetailSecurityHandler` hands them
 to MVC's `HandlerExceptionResolver` so the same advice renders them.
+
+**Rate limiting.** `RateLimitFilter` (`common/ratelimit`) sits in the security chain right after `CorsFilter`, so a
+429 carries the CORS headers and valid preflights aren't counted. It also runs before authentication and before the
+body is read. `SecurityConfig` builds it with `new`; it is not a bean, because Boot would also register a `Filter`
+bean in the servlet container, in front of Spring Security. `RateLimitPolicy` holds the matchers: every request
+spends from `GENERAL`, and matching requests also spend from `LOGIN`, `REGISTER`, `EMAIL` or `SEARCH` (endpoints in
+one policy share a bucket). The numbers are `app.rate-limit.limits.*`. `RateLimiter` keeps one Bucket4j greedy
+bucket per policy and client in a bounded Caffeine cache (idle buckets expire after their period, when they'd be
+full anyway). The client is `getRemoteAddr()`, an IPv6 address counted as its /64, so behind a proxy
+`server.forward-headers-strategy` is required. The filter hands the exception to the resolver like
+`ProblemDetailSecurityHandler`. `/actuator/health/**` is never limited. A new expensive or abusable endpoint gets a
+matcher in `RateLimitPolicy`.
 
 **Persistence.** Flyway owns the schema (`src/main/resources/db/migration/V{n}__*.sql`). Hibernate only runs
 `ddl-auto: validate`, so an entity mapping that doesn't match the SQL fails startup. `BaseEntity` provides:
@@ -235,6 +251,10 @@ The rest works as follows:
   `roomAmenity` and `bed` link V6 reference rows. A hotel in another currency needs `bareRoomType` plus a
   `ratePlan(...).currency(...)` in that currency. `review(...)` inserts a review with a random fake `booking_id`
   (no bookings table yet), written by `user()`, an account that can't sign in.
+- The `test` profile exempts `127.0.0.1` (MockMvc's address) from rate limits. Buckets live as long as the shared
+  context, so a rate limit test sends from its own address (`request.setRemoteAddr`, `203.0.113.x` in
+  `RateLimitFilterTest`). `general` and `search` refill within the test's own run, so their tests send until the
+  first 429 rather than expecting it at an exact count.
 - MockMvc encodes `%` in a URI template again; send text with `%` through `.param(...)`.
 - JDBC reads `smallint` back as `Integer`, not `Short`.
 - A `@DataJpaTest` needs `@AutoConfigureTestDatabase(replace = NONE)`, `@Import({TestcontainersConfiguration.class,
@@ -260,8 +280,9 @@ The rest works as follows:
   in bytes (`UserService.exceedsPasswordByteLimit`) on top of `@Size`, because `@Size` counts characters. Login treats
   an over-long password as bad credentials.
 - List endpoints return `PageResponse.from(page)`, never a raw `Page`. The page size is capped at 100 globally.
-- README "Known limitations" lists gaps left in on purpose: emails are only logged, no per-IP sign-in rate limiting
-  (accounts lock instead), registration's 409 reveals existing emails, concurrent refreshes sign a device out. It also
+- README "Known limitations" lists gaps left in on purpose: emails are only logged, rate limits are in memory per
+  instance and per IP (many IPs can still lock known accounts), registration's 409 reveals existing emails, concurrent
+  refreshes sign a device out. It also
   covers the limits of the hotel search (no currency conversion or "recommended" sort, room prices only with a tax
   flag, even split of guests per room, the cost of the filter counts) and of the hotel page (read-only reviews and
   stored ratings, per-room `FIXED` penalties, exact `roomsLeft`).
