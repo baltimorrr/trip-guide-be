@@ -16,8 +16,8 @@ import java.util.Set;
 import com.company.project.auth.config.AuthProperties;
 import com.company.project.auth.dto.ChangePasswordRequest;
 import com.company.project.auth.dto.ResetPasswordRequest;
-import com.company.project.auth.mail.AuthMailer;
 import com.company.project.auth.model.TokenType;
+import com.company.project.auth.services.AuthMailService;
 import com.company.project.auth.services.SessionService;
 import com.company.project.auth.services.UserTokenService;
 import com.company.project.common.exception.BusinessException;
@@ -53,7 +53,7 @@ class PasswordServiceImplTest {
 	PasswordEncoder passwordEncoder;
 
 	@Mock
-	AuthMailer mailer;
+	AuthMailService mailService;
 
 	PasswordServiceImpl service;
 
@@ -64,7 +64,7 @@ class PasswordServiceImplTest {
 		AuthProperties properties = new AuthProperties("https://app.example.com", Duration.ofDays(1), Duration.ofDays(30),
 				Duration.ofHours(24), Duration.ofMinutes(30), Duration.ZERO,
 				new AuthProperties.Lockout(5, Duration.ofMinutes(15), Duration.ofMinutes(15)));
-		service = new PasswordServiceImpl(users, userService, userTokens, sessionService, passwordEncoder, mailer, properties);
+		service = new PasswordServiceImpl(users, userService, userTokens, sessionService, passwordEncoder, mailService, properties);
 	}
 
 	@Test
@@ -74,7 +74,7 @@ class PasswordServiceImplTest {
 
 		service.forgotPassword(" Jane@Example.com ");
 
-		verify(mailer).sendPasswordReset("jane@example.com", "https://app.example.com/reset-password?token=tok");
+		verify(mailService).sendPasswordReset("jane@example.com", "https://app.example.com/reset-password?token=tok");
 	}
 
 	@Test
@@ -84,7 +84,7 @@ class PasswordServiceImplTest {
 
 		service.forgotPassword("jane@example.com");
 
-		verifyNoInteractions(userTokens, mailer);
+		verifyNoInteractions(userTokens, mailService);
 	}
 
 	@Test

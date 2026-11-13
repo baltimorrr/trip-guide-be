@@ -13,7 +13,7 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 
 /**
  * Register/verify/login helpers for API tests. Each test uses fresh emails so tests never share users. Emailed
- * links are read from {@link RecordingAuthMailer}.
+ * links are read from {@link RecordingAuthMailService}.
  */
 public final class TestAuth {
 
@@ -49,7 +49,7 @@ public final class TestAuth {
 	/** Registers an account and verifies its email, so it can sign in. */
 	public static void registerVerified(MockMvcTester mvc, String email, String password) {
 		assertThat(register(mvc, email, password)).hasStatus(HttpStatus.CREATED);
-		assertThat(verifyEmail(mvc, RecordingAuthMailer.verificationToken(email))).hasStatus(HttpStatus.NO_CONTENT);
+		assertThat(verifyEmail(mvc, RecordingAuthMailService.verificationToken(email))).hasStatus(HttpStatus.NO_CONTENT);
 	}
 
 	public static MvcTestResult login(MockMvcTester mvc, String email, String password) {

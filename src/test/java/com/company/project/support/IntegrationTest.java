@@ -16,13 +16,13 @@ import org.springframework.test.context.ActiveProfiles;
  * <p>
  * Every integration test uses this one annotation so Spring caches a single application
  * context (and therefore a single container) for the whole test run. Emailed links are recorded by
- * {@link RecordingAuthMailer} instead of being logged.
+ * {@link RecordingAuthMailService} instead of being logged.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import({ TestcontainersConfiguration.class, RecordingAuthMailer.Config.class })
+@Import({ TestcontainersConfiguration.class, RecordingAuthMailService.Config.class })
 @ActiveProfiles("test")
 public @interface IntegrationTest {
 }

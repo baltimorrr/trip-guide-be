@@ -5,8 +5,8 @@ import java.time.Instant;
 import com.company.project.auth.config.AuthProperties;
 import com.company.project.auth.dto.ChangePasswordRequest;
 import com.company.project.auth.dto.ResetPasswordRequest;
-import com.company.project.auth.mail.AuthMailer;
 import com.company.project.auth.model.TokenType;
+import com.company.project.auth.services.AuthMailService;
 import com.company.project.auth.services.PasswordService;
 import com.company.project.auth.services.SessionService;
 import com.company.project.auth.services.UserTokenService;
@@ -37,7 +37,7 @@ public class PasswordServiceImpl implements PasswordService {
 
 	private final PasswordEncoder passwordEncoder;
 
-	private final AuthMailer mailer;
+	private final AuthMailService mailService;
 
 	private final AuthProperties properties;
 
@@ -47,7 +47,7 @@ public class PasswordServiceImpl implements PasswordService {
 		users.findByEmail(User.normalizeEmail(email))
 			.filter(User::isEnabled)
 			.ifPresent(user -> userTokens.issue(user, TokenType.PASSWORD_RESET)
-				.ifPresent(token -> mailer.sendPasswordReset(user.getEmail(), properties.link(RESET_PASSWORD_PATH, token))));
+				.ifPresent(token -> mailService.sendPasswordReset(user.getEmail(), properties.link(RESET_PASSWORD_PATH, token))));
 	}
 
 	@Override

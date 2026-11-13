@@ -13,7 +13,7 @@ import java.util.Locale;
 
 import com.company.project.auth.security.OpaqueTokens;
 import com.company.project.support.IntegrationTest;
-import com.company.project.support.RecordingAuthMailer;
+import com.company.project.support.RecordingAuthMailService;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,8 +44,8 @@ class AuthControllerPasswordTest {
 		assertThat(forgot(known.toUpperCase(Locale.ROOT))).hasStatus(HttpStatus.ACCEPTED);
 		assertThat(forgot(unknown)).hasStatus(HttpStatus.ACCEPTED);
 
-		assertThat(RecordingAuthMailer.resetLink(known)).startsWith("http://localhost:5173/reset-password?token=");
-		assertThat(RecordingAuthMailer.resetLink(unknown)).isNull();
+		assertThat(RecordingAuthMailService.resetLink(known)).startsWith("http://localhost:5173/reset-password?token=");
+		assertThat(RecordingAuthMailService.resetLink(unknown)).isNull();
 	}
 
 	@Test
@@ -56,7 +56,7 @@ class AuthControllerPasswordTest {
 		String refreshBefore = JsonPath.read(body(before), "$.refreshToken");
 		forgot(email);
 
-		assertThat(reset(RecordingAuthMailer.resetToken(email), NEW_PASSWORD)).hasStatus(HttpStatus.NO_CONTENT);
+		assertThat(reset(RecordingAuthMailService.resetToken(email), NEW_PASSWORD)).hasStatus(HttpStatus.NO_CONTENT);
 
 		assertThat(login(mvc, email, USER_PASSWORD)).hasStatus(HttpStatus.UNAUTHORIZED);
 		assertThat(login(mvc, email, NEW_PASSWORD)).hasStatusOk();
@@ -72,7 +72,7 @@ class AuthControllerPasswordTest {
 	void resetLinkWorksOnce() {
 		String email = verifiedUser();
 		forgot(email);
-		String token = RecordingAuthMailer.resetToken(email);
+		String token = RecordingAuthMailService.resetToken(email);
 		assertThat(reset(token, NEW_PASSWORD)).hasStatus(HttpStatus.NO_CONTENT);
 
 		MvcTestResult again = reset(token, "another-password-3");
@@ -86,9 +86,9 @@ class AuthControllerPasswordTest {
 	void expiredOrReplacedResetLinkIsRejected() {
 		String email = verifiedUser();
 		forgot(email);
-		String first = RecordingAuthMailer.resetToken(email);
+		String first = RecordingAuthMailService.resetToken(email);
 		forgot(email);
-		String second = RecordingAuthMailer.resetToken(email);
+		String second = RecordingAuthMailService.resetToken(email);
 		jdbc.sql("update user_tokens set expires_at = now() - interval '1 second' where token_hash = :hash")
 			.param("hash", OpaqueTokens.hash(second))
 			.update();
@@ -103,7 +103,7 @@ class AuthControllerPasswordTest {
 	void weakNewPasswordIsRejectedAndTheLinkStillWorks() {
 		String email = verifiedUser();
 		forgot(email);
-		String token = RecordingAuthMailer.resetToken(email);
+		String token = RecordingAuthMailService.resetToken(email);
 
 		MvcTestResult weak = reset(token, "password");
 
@@ -120,7 +120,7 @@ class AuthControllerPasswordTest {
 		}
 		forgot(email);
 
-		assertThat(reset(RecordingAuthMailer.resetToken(email), NEW_PASSWORD)).hasStatus(HttpStatus.NO_CONTENT);
+		assertThat(reset(RecordingAuthMailService.resetToken(email), NEW_PASSWORD)).hasStatus(HttpStatus.NO_CONTENT);
 
 		assertThat(login(mvc, email, NEW_PASSWORD)).hasStatusOk();
 	}
@@ -131,7 +131,7 @@ class AuthControllerPasswordTest {
 		register(mvc, email, USER_PASSWORD);
 		forgot(email);
 
-		assertThat(reset(RecordingAuthMailer.resetToken(email), NEW_PASSWORD)).hasStatus(HttpStatus.NO_CONTENT);
+		assertThat(reset(RecordingAuthMailService.resetToken(email), NEW_PASSWORD)).hasStatus(HttpStatus.NO_CONTENT);
 
 		assertThat(login(mvc, email, NEW_PASSWORD)).hasStatusOk();
 	}

@@ -8,8 +8,8 @@ import com.company.project.auth.dto.ClientInfo;
 import com.company.project.auth.dto.LoginRequest;
 import com.company.project.auth.dto.RegisterRequest;
 import com.company.project.auth.dto.TokenResponse;
-import com.company.project.auth.mail.AuthMailer;
 import com.company.project.auth.model.TokenType;
+import com.company.project.auth.services.AuthMailService;
 import com.company.project.auth.services.AuthService;
 import com.company.project.auth.services.SessionService;
 import com.company.project.auth.services.UserTokenService;
@@ -44,7 +44,7 @@ public class AuthServiceImpl implements AuthService {
 
 	private final UserTokenService userTokens;
 
-	private final AuthMailer mailer;
+	private final AuthMailService mailService;
 
 	private final AuthProperties properties;
 
@@ -129,7 +129,7 @@ public class AuthServiceImpl implements AuthService {
 	}
 
 	private void sendVerification(User user, String token) {
-		mailer.sendEmailVerification(user.getEmail(), properties.link(VERIFY_EMAIL_PATH, token));
+		mailService.sendEmailVerification(user.getEmail(), properties.link(VERIFY_EMAIL_PATH, token));
 	}
 
 }

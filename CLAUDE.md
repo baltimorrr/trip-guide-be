@@ -88,8 +88,8 @@ Account rules worth knowing before changing them:
 - Lockout counting is one atomic JPQL `update versioned User` in `UserRepositoryImpl`. `AuthServiceImpl.login` is
   deliberately not transactional, so the failure count commits before the 401. A locked account fails in
   `DaoAuthenticationProvider`'s pre-checks (`LockedException` → the generic 401) before its password is checked.
-- Unverified accounts get 403 only after the password matched. Emails go through `AuthMailer`; the only
-  implementation, `LoggingAuthMailer`, writes the links to the log. Mail is sent after the token's transaction, never
+- Unverified accounts get 403 only after the password matched. Emails go through `AuthMailService`; the only
+  implementation, `AuthMailServiceImpl`, writes the links to the log. Mail is sent after the token's transaction, never
   inside one.
 
 **Errors.** Every error is `application/problem+json`. Services throw `BusinessException(HttpStatus, message)` or
@@ -239,7 +239,7 @@ The rest works as follows:
   assert only on that, never on counts or on an empty table.
 - `TestAuth` provides `userToken(mvc)` (registers, verifies and signs in), `registerVerified`, `adminToken(mvc)` (the
   bootstrap admin from `application-test.yml`) and `bearer(token)`. Tests use the AssertJ `MockMvcTester` API.
-- `@IntegrationTest` imports `RecordingAuthMailer.Config`, a `@Primary` mailer that keeps the last link per email.
+- `@IntegrationTest` imports `RecordingAuthMailService.Config`, a `@Primary` mailer that keeps the last link per email.
   Read links with its static `verificationToken(email)` / `resetToken(email)`; don't add a mailer mock (that would
   start a second context). `app.auth.email-cooldown` is 0 in tests.
 - `CatalogFixtures` inserts partners, hotels, room types, rate plans, rules, inventory, photos and tax rules with

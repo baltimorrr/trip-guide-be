@@ -3,7 +3,7 @@ package com.company.project.support;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.company.project.auth.mail.AuthMailer;
+import com.company.project.auth.services.AuthMailService;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
@@ -14,7 +14,7 @@ import org.springframework.web.util.UriComponentsBuilder;
  * Every {@link IntegrationTest} gets it through {@link Config}; the map is static because {@link TestAuth} is a
  * static helper. Tests use unique emails, so they never read each other's links.
  */
-public class RecordingAuthMailer implements AuthMailer {
+public class RecordingAuthMailService implements AuthMailService {
 
 	private static final Map<String, String> VERIFICATION_LINKS = new ConcurrentHashMap<>();
 
@@ -55,14 +55,14 @@ public class RecordingAuthMailer implements AuthMailer {
 		return UriComponentsBuilder.fromUriString(link).build().getQueryParams().getFirst("token");
 	}
 
-	/** Replaces the logging mailer in the shared test context. */
+	/** Replaces the logging mail service in the shared test context. */
 	@TestConfiguration(proxyBeanMethods = false)
 	public static class Config {
 
 		@Bean
 		@Primary
-		RecordingAuthMailer recordingAuthMailer() {
-			return new RecordingAuthMailer();
+		RecordingAuthMailService recordingAuthMailService() {
+			return new RecordingAuthMailService();
 		}
 
 	}

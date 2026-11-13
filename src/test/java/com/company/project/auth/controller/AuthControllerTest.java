@@ -14,7 +14,7 @@ import java.util.Locale;
 
 import com.company.project.auth.security.OpaqueTokens;
 import com.company.project.support.IntegrationTest;
-import com.company.project.support.RecordingAuthMailer;
+import com.company.project.support.RecordingAuthMailService;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -158,7 +158,7 @@ class AuthControllerTest {
 		assertThat(result).bodyJson().extractingPath("$.emailVerified").isEqualTo(false);
 		assertThat(result).bodyJson().extractingPath("$.fullName").isEqualTo("Jane Doe");
 		assertThat(result).bodyJson().extractingPath("$.phone").isEqualTo("+84 90 123 4567");
-		assertThat(RecordingAuthMailer.verificationLink(email)).startsWith("http://localhost:5173/verify-email?token=");
+		assertThat(RecordingAuthMailService.verificationLink(email)).startsWith("http://localhost:5173/verify-email?token=");
 	}
 
 	@Test
@@ -173,7 +173,7 @@ class AuthControllerTest {
 		assertThat(login(mvc, email, "wrong-password-1")).bodyJson().extractingPath("$.detail")
 				.isEqualTo("Invalid email or password");
 
-		assertThat(verifyEmail(mvc, RecordingAuthMailer.verificationToken(email))).hasStatus(HttpStatus.NO_CONTENT);
+		assertThat(verifyEmail(mvc, RecordingAuthMailService.verificationToken(email))).hasStatus(HttpStatus.NO_CONTENT);
 
 		assertThat(login(mvc, email, USER_PASSWORD)).hasStatusOk();
 	}
@@ -182,7 +182,7 @@ class AuthControllerTest {
 	void verificationLinkWorksOnce() {
 		String email = uniqueEmail();
 		register(mvc, email, USER_PASSWORD);
-		String token = RecordingAuthMailer.verificationToken(email);
+		String token = RecordingAuthMailService.verificationToken(email);
 		assertThat(verifyEmail(mvc, token)).hasStatus(HttpStatus.NO_CONTENT);
 
 		MvcTestResult again = verifyEmail(mvc, token);
@@ -195,7 +195,7 @@ class AuthControllerTest {
 	void expiredOrUnknownVerificationLinkIsRejected() {
 		String email = uniqueEmail();
 		register(mvc, email, USER_PASSWORD);
-		String token = RecordingAuthMailer.verificationToken(email);
+		String token = RecordingAuthMailService.verificationToken(email);
 		jdbc.sql("update user_tokens set expires_at = now() - interval '1 minute' where token_hash = :hash")
 			.param("hash", OpaqueTokens.hash(token))
 			.update();
@@ -209,10 +209,10 @@ class AuthControllerTest {
 	void resendReplacesThePreviousLink() {
 		String email = uniqueEmail();
 		register(mvc, email, USER_PASSWORD);
-		String first = RecordingAuthMailer.verificationToken(email);
+		String first = RecordingAuthMailService.verificationToken(email);
 
 		assertThat(resend(email.toUpperCase(Locale.ROOT))).hasStatus(HttpStatus.ACCEPTED);
-		String second = RecordingAuthMailer.verificationToken(email);
+		String second = RecordingAuthMailService.verificationToken(email);
 
 		assertThat(second).isNotEqualTo(first);
 		assertThat(verifyEmail(mvc, first)).hasStatus(HttpStatus.BAD_REQUEST);
@@ -224,13 +224,13 @@ class AuthControllerTest {
 		String unknown = uniqueEmail();
 		String verified = uniqueEmail();
 		registerVerified(mvc, verified, USER_PASSWORD);
-		String usedLink = RecordingAuthMailer.verificationLink(verified);
+		String usedLink = RecordingAuthMailService.verificationLink(verified);
 
 		assertThat(resend(unknown)).hasStatus(HttpStatus.ACCEPTED);
 		assertThat(resend(verified)).hasStatus(HttpStatus.ACCEPTED);
 
-		assertThat(RecordingAuthMailer.verificationLink(unknown)).isNull();
-		assertThat(RecordingAuthMailer.verificationLink(verified)).isEqualTo(usedLink);
+		assertThat(RecordingAuthMailService.verificationLink(unknown)).isNull();
+		assertThat(RecordingAuthMailService.verificationLink(verified)).isEqualTo(usedLink);
 	}
 
 	private MvcTestResult resend(String email) {

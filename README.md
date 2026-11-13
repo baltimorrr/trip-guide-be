@@ -154,7 +154,7 @@ and the password are checked, and after CORS, so browser code can read the 429.
 
 **Sign-up.** Passwords need 8–72 characters with a letter and a digit (and at most 72 bytes). A new account starts
 unverified, and a verification link (24 h, works once) is sent. **No email service is wired yet: links are written
-to the app log** (`LoggingAuthMailer`). Links point to the web app (`APP_FRONTEND_URL`): `/verify-email?token=…`
+to the app log** (`AuthMailServiceImpl`). Links point to the web app (`APP_FRONTEND_URL`): `/verify-email?token=…`
 and `/reset-password?token=…`. That page posts the token to the API. Signing in before verifying gets 403 "Email not
 verified", but only with the right password. A wrong password always gets the generic 401. Existing accounts and the
 bootstrap admin count as verified.
@@ -469,7 +469,7 @@ curl -s "$BASE/api/hotels/my-khe-beach-resort-demo/reviews?sort=score,desc"
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
 Full-app tests use `@IntegrationTest` (`src/test/.../support`). Every class shares one Spring context and one
 container, so the suite stays fast. Tests create their own data with unique emails and never assume an empty database.
-`@IntegrationTest` swaps the logging mailer for `RecordingAuthMailer`, so tests follow emailed links like a user;
+`@IntegrationTest` swaps the logging mail service for `RecordingAuthMailService`, so tests follow emailed links like a user;
 `TestAuth.userToken` registers, verifies and signs in.
 Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, then call the destination sync
 themselves (the `test` profile never schedules it). `CatalogFixtures.roomType` also adds a sellable rate plan
@@ -497,7 +497,6 @@ src/main/java/com/company/project/
 │   └── model/BaseEntity.java            id, version, createdAt, updatedAt
 ├── auth/                                sign-up, verification, sign-in sessions, passwords, profile endpoints
 │   ├── controller/  config/  dto/  model/  repository/ (+ impl/)  services/ (+ impl/)
-│   ├── mail/                            AuthMailer; LoggingAuthMailer writes links to the log
 │   └── security/                        JWT encode/decode, session check per request, opaque tokens, user lookup
 ├── user/                                User entity, roles, account creation, lockout counters, profile
 │   ├── model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
@@ -621,7 +620,7 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
 - Build a jar with `./mvnw package` (`target/spring-base-0.0.1-SNAPSHOT.jar`), or a container image with
   `./mvnw spring-boot:build-image`.
 - Provide `APP_JWT_SECRET` from a secret manager. Changing it invalidates every issued token.
-- Set `APP_FRONTEND_URL` to the web app, and wire a real `AuthMailer` before real users sign up (see Known
+- Set `APP_FRONTEND_URL` to the web app, and wire a real `AuthMailService` before real users sign up (see Known
   limitations).
 - Behind a reverse proxy, set `server.forward-headers-strategy=native`. Without it, every request seems to come from
   the proxy: all clients share one set of rate limits (the whole site gets 429s), and sessions record the proxy's IP.
@@ -649,7 +648,7 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
 ## Known limitations (deliberate, for a base project)
 
 - **Emails are not sent.** Verification and reset links are written to the log at INFO in every profile, so anyone
-  who can read the log can reset any password. Replace `LoggingAuthMailer` before launch.
+  who can read the log can reset any password. Replace `AuthMailServiceImpl` before launch.
 - **Rate limits are kept in memory, per instance.** With N instances a client gets N times each limit, and a restart
   resets every count. Shared counts need a store all instances use (Redis, or a table in PostgreSQL).
 - **Rate limits are per IP.** Many users behind one NAT (offices, mobile carriers) share one set of limits. An
