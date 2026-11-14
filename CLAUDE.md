@@ -17,7 +17,8 @@ slice of A-CONT-01 that curates destinations, the email-account stories C-AUTH-0
 migration V4; emails are only logged), the wishlist C-SRCH-08 (`wishlist/`, migration V7; search results don't
 mark saved hotels, clients draw the hearts from `GET /api/wishlist`), and the hotel page C-HOTEL-01/02/03/04/06/07
 (`hotel/` controller and service, `review/`, migration V8: `hotel_policies`, `reviews`; reviews are read-only until
-C-MYBK-05). The schema doc says it was generated from a `schema.sql` that is not in this repo. **Decided
+C-MYBK-05), and the cart C-CART-01/02/03/04 (`cart/`, migration V9; checking out a group waits for bookings,
+C-BOOK-01). The schema doc says it was generated from a `schema.sql` that is not in this repo. **Decided
 (2026-10-28), hotel page:** `reviews` follows the doc exactly (`booking_id` not null and unique; its FK is added by
 the migration that creates `bookings`), so the demo seed has no reviews; room types that don't fit the guests are
 listed last with `fitsGuests: false`, not hidden.
@@ -37,7 +38,10 @@ session (`previous_token_hash`); access tokens carry `sid` and are checked again
 `previous_token_hash`, `last_used_at`; `ip` is varchar), and the doc was edited to match. **Decided (2026-10-30),
 rate limiting:** every request is limited per client IP (IPv6 by its /64), with stricter limits on sign-in,
 registration, the email-sending endpoints and the priced search. Counts live in memory per instance (Bucket4j +
-Caffeine), not in a shared store. Still open: roles
+Caffeine), not in a shared store. **Decided (2026-11-13), cart:** carts are server-side for signed-in users only
+(`carts.user_id` not null and unique, no `guest_token`; the doc was edited to match). Guests keep theirs in the
+browser and send it to `POST /api/cart/merge` after signing in. On merge a line already in the cart keeps the larger
+quantity, while adding a line again (`POST /api/cart/items`) adds the quantities up. Still open: roles
 (`customer/hotel_owner/hotel_staff/admin` vs code's `USER/ADMIN`). Ask before changing it.
 
 ## Commands
@@ -224,8 +228,19 @@ The rest works as follows:
   them once; `HotelControllerRoomsTest#theCheapestFittingRateIsTheSearchCardsOffer` keeps the two equal. Its
   `night_prices` column (`bigint[]`, read as `Long[]`) feeds `CancellationSchedule`, which turns a policy's rules into
   priced tiers; the free deadline stays `FreeCancellation.until`, and the first paid tier starts there.
-- `SearchCriteria.today()` (the date at UTC−12) is the "today" every stay is checked against, in search and on the
-  hotel page.
+- `SearchCriteria.today()` (the date at UTC−12) is the "today" every stay is checked against, in search, on the
+  hotel page and in the cart (its expiry job deletes lines checking in before it).
+- The cart (`CartServiceImpl`) never prices on its own. Every read and write calls `findRoomRates` once per (hotel,
+  dates, guests per room) and picks its rate plans' rows, so the cart, the room list and search agree;
+  `CartControllerPricesTest#aLineCostsWhatTheHotelPageAsksForTheSameRateAndStay` keeps it that way. The rules
+  maintainers would otherwise break:
+  - A group (one hotel, one date range) is one future booking, so its lines of one room type share `roomsLeft`.
+  - Every write locks the user's `carts` row (`findByUserIdForUpdate`) before checking rooms or merging lines.
+  - One line per (cart, rate plan, dates, adults, child ages) is enforced by `cart_items_line_key`, so the ages must
+    be stored sorted (`RoomGuests` sorts them).
+  - `CartItem.childAges` (`Short[]` ↔ `smallint[]`) is the first array-mapped entity field.
+  - The merge catches `BusinessException` per item, which is safe only because every check throws before anything
+    is written. Never catch database exceptions there.
 - Price filter and sort compare one currency (`HotelFilter.priceCurrency`: the request's `currency`, else the most
   common selling currency of the destination's listed hotels) until currency conversion exists (C-SRCH-05).
 - Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels).
@@ -250,7 +265,10 @@ The rest works as follows:
   assert relative order, not positions. `HotelBuilder` sets stars, type, distance and currency; `hotelAmenity`,
   `roomAmenity` and `bed` link V6 reference rows. A hotel in another currency needs `bareRoomType` plus a
   `ratePlan(...).currency(...)` in that currency. `review(...)` inserts a review with a random fake `booking_id`
-  (no bookings table yet), written by `user()`, an account that can't sign in.
+  (no bookings table yet), written by `user()`, an account that can't sign in. `defaultRatePlan` returns the plan
+  `roomType` added. `cartItem` writes cart lines the API refuses (past check-ins); a test that calls
+  `deleteCheckedInBefore` or `removeExpiredItems` deletes every test's past lines, so only past-dated fixtures may be
+  left for it.
 - The `test` profile exempts `127.0.0.1` (MockMvc's address) from rate limits. Buckets live as long as the shared
   context, so a rate limit test sends from its own address (`request.setRemoteAddr`, `203.0.113.x` in
   `RateLimitFilterTest`). `general` and `search` refill within the test's own run, so their tests send until the
@@ -284,8 +302,9 @@ The rest works as follows:
   instance and per IP (many IPs can still lock known accounts), registration's 409 reveals existing emails, concurrent
   refreshes sign a device out. It also
   covers the limits of the hotel search (no currency conversion or "recommended" sort, room prices only with a tax
-  flag, even split of guests per room, the cost of the filter counts) and of the hotel page (read-only reviews and
-  stored ratings, per-room `FIXED` penalties, exact `roomsLeft`).
+  flag, even split of guests per room, the cost of the filter counts), of the hotel page (read-only reviews and
+  stored ratings, per-room `FIXED` penalties, exact `roomsLeft`) and of the cart (no checkout or holds yet, merged
+  lines start at the merge's price, one room-list query per distinct stay, empty cart rows kept).
 - JPQL bulk updates bypass auditing and versioning: write `update versioned X` and set `updatedAt` yourself (see
   `UserSessionRepositoryImpl`).
 - Public endpoints need a `permitAll` matcher in `SecurityConfig` and an empty `@SecurityRequirements` on the

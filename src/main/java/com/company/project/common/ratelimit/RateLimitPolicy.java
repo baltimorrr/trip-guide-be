@@ -27,8 +27,9 @@ public enum RateLimitPolicy {
 	/** Each of these may send an email, so one client can't mail thousands of addresses. */
 	EMAIL(post("/api/auth/verify-email/resend", "/api/auth/password/forgot")),
 
-	/** The priced availability queries, the most expensive SQL in the app. */
-	SEARCH(get("/api/search/hotels", "/api/search/hotels/filters", "/api/hotels/*/rooms"));
+	/** The priced availability queries, the most expensive SQL in the app; the cart runs them for every line's stay. */
+	SEARCH(new OrRequestMatcher(get("/api/search/hotels", "/api/search/hotels/filters", "/api/hotels/*/rooms",
+			"/api/cart"), post("/api/cart/items", "/api/cart/merge"), put("/api/cart/items/*")));
 
 	private final RequestMatcher matcher;
 
@@ -57,6 +58,10 @@ public enum RateLimitPolicy {
 
 	private static RequestMatcher get(String... paths) {
 		return matcher(HttpMethod.GET, paths);
+	}
+
+	private static RequestMatcher put(String... paths) {
+		return matcher(HttpMethod.PUT, paths);
 	}
 
 	private static RequestMatcher matcher(HttpMethod method, String... paths) {

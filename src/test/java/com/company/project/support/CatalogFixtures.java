@@ -186,6 +186,47 @@ public final class CatalogFixtures {
 		return new RatePlanBuilder(roomTypeId);
 	}
 
+	/** The rate plan {@link #roomType} added: the room type's first one. */
+	public long defaultRatePlan(long roomTypeId) {
+		return jdbc.sql("select min(id) from rate_plans where room_type_id = :roomTypeId")
+			.param("roomTypeId", roomTypeId)
+			.query(Long.class)
+			.single();
+	}
+
+	/**
+	 * A cart line written straight to the database, for lines the API would refuse (a check-in already past). It
+	 * creates the user's cart if needed. Adults per room, no children, the stay priced at {@link #DEFAULT_PRICE} a
+	 * night in VND.
+	 */
+	public long cartItem(long userId, long ratePlanId, LocalDate checkIn, LocalDate checkOut, int quantity, int adults) {
+		jdbc.sql("""
+				insert into carts (user_id, created_at, updated_at) values (:userId, now(), now())
+				on conflict (user_id) do nothing""")
+			.param("userId", userId)
+			.update();
+		return jdbc.sql("""
+				insert into cart_items (cart_id, rate_plan_id, check_in, check_out, quantity, adults, price_at_add_minor,
+				                        currency, created_at, updated_at)
+				values ((select id from carts where user_id = :userId), :ratePlanId, :checkIn, :checkOut, :quantity,
+				        :adults, :price * (cast(:checkOut as date) - cast(:checkIn as date)), 'VND', now(), now())
+				returning id""")
+			.param("userId", userId)
+			.param("ratePlanId", ratePlanId)
+			.param("checkIn", checkIn)
+			.param("checkOut", checkOut)
+			.param("quantity", quantity)
+			.param("adults", adults)
+			.param("price", DEFAULT_PRICE)
+			.query(Long.class)
+			.single();
+	}
+
+	/** The id of the account with this email. */
+	public long userId(String email) {
+		return jdbc.sql("select id from users where email = :email").param("email", email).query(Long.class).single();
+	}
+
 	/** An account that only owns reviews: its password hash matches nothing, so it can't sign in. */
 	public long user() {
 		return jdbc.sql("""

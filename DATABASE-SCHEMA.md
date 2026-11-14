@@ -1,7 +1,8 @@
 // Hotel Booking Platform — database schema for dbdiagram.io
 // Generated from schema.sql (PostgreSQL 16). Paste into https://dbdiagram.io
 // Edited by hand to match the code: destinations (stored spellings), users.first_failed_login_at,
-// user_sessions.previous_token_hash and last_used_at.
+// user_sessions.previous_token_hash and last_used_at; carts (any hotel, dates per item in cart_items; signed-in
+// users only, so no guest_token); cart_items (one row per rate, stay and guests).
 // Conventions: money = bigint *_minor (cents) + char(3) currency; a night = stay_date in [check_in, check_out)
 
 Project hotel_booking {
@@ -697,22 +698,12 @@ Season, weekend and holiday price rules. Price of one night, first match wins:
 
 Table carts {
 id uuid [pk, default: `gen_random_uuid()`]
-user_id uuid
-guest_token text
-hotel_id uuid [not null]
-check_in date [not null]
-check_out date [not null]
+user_id uuid [not null, unique]
 created_at timestamptz [not null, default: `now()`]
 updated_at timestamptz [not null, default: `now()`]
 
-indexes {
-guest_token [name: 'one_cart_per_guest', note: 'UNIQUE only WHERE (guest_token IS NOT NULL)']
-user_id [name: 'one_cart_per_user', note: 'UNIQUE only WHERE (user_id IS NOT NULL)']
-}
-
 Note: '''
-CHECK ((check_out > check_in))
-CHECK (((user_id IS NOT NULL) OR (guest_token IS NOT NULL)))
+One cart per signed-in user. Guests keep their cart in the browser and merge it in after signing in.
 '''
 }
 
@@ -720,6 +711,8 @@ Table cart_items {
 id uuid [pk, default: `gen_random_uuid()`]
 cart_id uuid [not null]
 rate_plan_id uuid [not null]
+check_in date [not null]
+check_out date [not null]
 quantity smallint [not null, default: 1]
 adults smallint [not null, note: 'per room']
 children smallint [not null, default: 0]
@@ -730,12 +723,20 @@ created_at timestamptz [not null, default: `now()`]
 updated_at timestamptz [not null, default: `now()`]
 
 indexes {
-cart_id [name: 'cart_items_cart_id_idx']
+(cart_id, rate_plan_id, check_in, check_out, adults, child_ages) [name: 'cart_items_line_key', unique, note: 'child_ages stored sorted']
+check_in [name: 'cart_items_check_in_idx', note: 'expiry of passed check-ins']
 }
 
 Note: '''
+A cart holds items of any hotel and dates; the hotel comes from the rate plan.
+Items of one hotel with the same check_in and check_out are checked out together as one booking.
+CHECK ((check_out > check_in))
 CHECK ((quantity >= 1))
 CHECK ((adults >= 1))
+CHECK ((children >= 0))
+CHECK ((cardinality(child_ages) = children))
+CHECK (((0 <= ALL (child_ages)) AND (17 >= ALL (child_ages))))
+CHECK ((price_at_add_minor >= 0))
 '''
 }
 
@@ -1261,7 +1262,6 @@ Ref: cancellation_policy_rules.policy_id > cancellation_policies.id [delete: cas
 Ref: room_inventory.room_type_id > room_types.id [delete: cascade]
 Ref: rate_plan_prices.rate_plan_id > rate_plans.id [delete: cascade]
 Ref: rate_rules.rate_plan_id > rate_plans.id [delete: cascade]
-Ref: carts.hotel_id > hotels.id
 Ref: carts.user_id > users.id [delete: cascade]
 Ref: cart_items.cart_id > carts.id [delete: cascade]
 Ref: cart_items.currency > currencies.code

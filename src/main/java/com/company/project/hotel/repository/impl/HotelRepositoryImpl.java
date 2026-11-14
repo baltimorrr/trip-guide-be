@@ -71,6 +71,8 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 
 	private static final String CARDS_BY_ID = HotelJpql.CARD_SELECT + "where h.id in :ids";
 
+	private static final String LISTED_IDS = "select h.id from Hotel h where h.id in :ids and " + HotelJpql.HOTEL_LISTED;
+
 	private static final String TOP_IN_DESTINATION = HotelJpql.CARD_SELECT
 			+ "join Destination d on d.id = :destinationId\nwhere " + HotelJpql.HOTEL_LISTED
 			+ "\n  and " + HotelJpql.ADDRESS_IN_DESTINATION
@@ -407,6 +409,11 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 	@Override
 	public List<HotelCardView> findCardsByIdIn(Collection<Long> ids) {
 		return entityManager.createQuery(CARDS_BY_ID, HotelCardView.class).setParameter("ids", ids).getResultList();
+	}
+
+	@Override
+	public List<Long> findListedIds(Collection<Long> ids) {
+		return entityManager.createQuery(LISTED_IDS, Long.class).setParameter("ids", ids).getResultList();
 	}
 
 	@Override

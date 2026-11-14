@@ -25,3 +25,6 @@ app:
       # Tests call DestinationSyncService.sync() themselves; a background run would race with them.
       cron: "-"
       on-startup: false
+  cart:
+    # Tests call CartService.removeExpiredItems() themselves.
+    expiry-cron: "-"

@@ -85,7 +85,7 @@ app:
       email:
         capacity: 10
         period: 1h
-      # search/hotels, search/hotels/filters and hotels/{slug}/rooms share this one.
+      # search/hotels, search/hotels/filters, hotels/{slug}/rooms and the cart (GET, add, edit, merge) share this one.
       search:
         capacity: 60
         period: 1m
@@ -102,3 +102,8 @@ app:
       # Rebuilds destinations from listed hotels' addresses. Spring cron (six fields); "-" disables it.
       cron: ${APP_DESTINATIONS_SYNC_CRON:0 */10 * * * *}
       on-startup: ${APP_DESTINATIONS_SYNC_ON_STARTUP:true}
+  cart:
+    # Most lines (rate + stay + guests) in one cart; each read prices every line's stay.
+    max-items: 20
+    # Deletes cart lines whose check-in has passed. Spring cron (six fields); "-" disables it.
+    expiry-cron: ${APP_CART_EXPIRY_CRON:0 0 * * * *}

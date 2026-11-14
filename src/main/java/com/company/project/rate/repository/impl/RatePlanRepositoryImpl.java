@@ -2,10 +2,12 @@ package com.company.project.rate.repository.impl;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 import com.company.project.rate.repository.CancellationRuleView;
 import com.company.project.rate.repository.RateOfferView;
 import com.company.project.rate.repository.RatePlanRepositoryCustom;
+import com.company.project.rate.repository.RatePlanSellerView;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 
@@ -38,6 +40,13 @@ public class RatePlanRepositoryImpl implements RatePlanRepositoryCustom {
 			where rp.id in :ids
 			order by rp.id, r.hoursBeforeCheckIn""";
 
+	private static final String SELLER = """
+			select new com.company.project.rate.repository.RatePlanSellerView(rp.id, rt.id, h.id, h.currency)
+			from RatePlan rp
+			join rp.roomType rt
+			join rt.hotel h
+			where rp.id = :id""";
+
 	private final EntityManager entityManager;
 
 	@Override
@@ -52,6 +61,14 @@ public class RatePlanRepositoryImpl implements RatePlanRepositoryCustom {
 		return entityManager.createQuery(CANCELLATION_RULES, CancellationRuleView.class)
 			.setParameter("ids", ratePlanIds)
 			.getResultList();
+	}
+
+	@Override
+	public Optional<RatePlanSellerView> findSeller(long ratePlanId) {
+		return entityManager.createQuery(SELLER, RatePlanSellerView.class)
+			.setParameter("id", ratePlanId)
+			.getResultStream()
+			.findFirst();
 	}
 
 }

@@ -12,7 +12,9 @@ curate those destinations. See [Search and destinations](#search-and-destination
 See [Accounts and sessions](#accounts-and-sessions). Signed-in customers can save hotels to a wishlist (C-SRCH-08).
 See [Wishlist](#wishlist). Each hotel has a public page: overview, facilities and policies, the rooms and rates for a
 stay with their cancellation penalties, and reviews (C-HOTEL-01/02/03/04/06/07). See
-[Hotel detail page](#hotel-detail-page).
+[Hotel detail page](#hotel-detail-page). Signed-in customers keep a cart of rooms from any hotels and dates, priced
+again on every read and grouped into future bookings, and a guest's browser cart merges into it on sign-in
+(C-CART-01/02/03/04). See [Cart](#cart).
 
 ## Stack
 
@@ -121,6 +123,11 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 | GET | `/api/wishlist?page=&size=` | authenticated | paged saved hotels as cards, newest first, each with `available` and `savedAt` |
 | PUT | `/api/wishlist/{hotelId}` | authenticated | 204 whether new or already saved; 404 unknown or unlisted hotel |
 | DELETE | `/api/wishlist/{hotelId}` | authenticated | always 204 |
+| GET | `/api/cart` | authenticated | `{groups: [...]}`: lines by hotel and dates, each with its status and current price |
+| POST | `/api/cart/items` | authenticated | `{ratePlanId, checkIn, checkOut, quantity, adults, childAges?}` → the cart; 400 invalid stay or guests, 404 unknown rate plan, 409 not sellable, too few rooms, cart full |
+| PUT | `/api/cart/items/{id}` | authenticated | `{checkIn, checkOut, quantity}` → the cart; errors as for adding, 404 not in this cart |
+| DELETE | `/api/cart/items/{id}` | authenticated | always 204 |
+| POST | `/api/cart/merge` | authenticated | `{items: [...]}` (the browser cart) → `{cart, skipped}`; 400 more items than a cart holds |
 | GET | `/api/admin/destinations?q=` | ADMIN | paged; name prefix, featured first |
 | PUT | `/api/admin/destinations/{id}` | ADMIN | `{name, imageUrl, featuredRank}`; `featuredRank: null` = not featured |
 | POST | `/api/admin/destinations/sync` | ADMIN | runs the destination sync now: `{created, withHotels}` |
@@ -143,7 +150,7 @@ limit on top. Endpoints listed together share one count:
 | `login` | `POST /api/auth/login` | 10 per minute |
 | `register` | `POST /api/auth/register` | 10 per hour |
 | `email` | `POST /api/auth/verify-email/resend`, `POST /api/auth/password/forgot` | 10 per hour |
-| `search` | `GET /api/search/hotels`, `/api/search/hotels/filters`, `/api/hotels/{slug}/rooms` | 60 per minute |
+| `search` | `GET /api/search/hotels`, `/api/search/hotels/filters`, `/api/hotels/{slug}/rooms`, `/api/cart`; `POST /api/cart/items`, `/api/cart/merge`; `PUT /api/cart/items/{id}` | 60 per minute |
 
 A request under a specific limit also counts toward `general`. Counts come back gradually, not all at once: after 10
 sign-ins, one more is allowed every 6 seconds. Over a limit, the API answers `429` problem+json
@@ -413,6 +420,63 @@ curl -s "$BASE/api/hotels/my-khe-beach-resort-demo/rooms?checkIn=2026-11-01&chec
 curl -s "$BASE/api/hotels/my-khe-beach-resort-demo/reviews?sort=score,desc"
 ```
 
+## Cart
+
+Signed-in customers keep one cart (C-CART-01/02/03/04). Every call needs an access token, and the user always comes
+from the token. Guests keep their cart in the browser, where the public `GET /api/hotels/{slug}/rooms` prices it.
+After signing in, the client sends it once to `POST /api/cart/merge`.
+
+- **Lines and groups.** A line is `quantity` rooms of one rate plan (room type + board + cancellation) for one stay,
+  with the same `adults` and `childAges` in each room. The cart has one line per rate, stay and guests; the same ages
+  in another order are the same line. Lines are grouped by hotel and date range, and a group is what one checkout
+  will book as one booking (C-BOOK-01, not built yet). Groups come by check-in, then hotel name. Lines come in the
+  order they were added. A cart holds at most 20 lines (`app.cart.max-items`).
+- **Live prices** (`GET /api/cart`, C-CART-02). Nothing is locked when a line is added. Every read prices each line
+  with the hotel page's room list (one call per hotel, dates and guests per room), so the cart, the room list and the
+  search agree on what can be sold and for how much. Each line has a `status`:
+  - `AVAILABLE`.
+  - `NOT_ENOUGH_ROOMS`: the rate still sells, but the group's lines of that room type need more rooms than
+    `roomsLeft`.
+  - `UNAVAILABLE`: the rate no longer sells the stay (sold out, a closed night, a minimum stay, or the plan, room
+    type or hotel off sale), or the room type no longer holds the guests. `hotel.listed` is false when it's the
+    hotel.
+  - `CHECK_IN_PASSED`: the next expiry run deletes it.
+- **What a line shows.**
+  - A priced line (`AVAILABLE` or `NOT_ENOUGH_ROOMS`) has `roomsLeft`, `cancellation` (as on the hotel page),
+    `pricePerRoom` (one room, whole stay) and `totalPrice`. Other lines have null there.
+  - `priceAtAdd` is one room's price when the line was last picked, and `priceChanged` flags a difference.
+- **What a group shows.** `canCheckout` is true when every line is `AVAILABLE`, `total` sums those lines, and
+  `taxesIncluded` follows the search rule. Prices are in the hotel's currency, before any tax added on top.
+- **Adding** (`POST /api/cart/items`) answers the cart. Adding a line that is already there adds up the quantities and
+  resets `priceAtAdd`. A rejected add changes nothing. It answers:
+  - 400 for a stay the search would reject (also for the summed quantity) or guests the room can't hold
+  - 404 for an unknown rate plan
+  - 409 when the rate can't sell the stay, too few rooms are left (counting the group's other lines of that room type)
+    or the cart is full
+- **Editing** (`PUT /api/cart/items/{id}`, C-CART-03) runs the same checks and answers the cart.
+  - Changing only the quantity keeps `priceAtAdd`, so the notice survives. New dates reset it.
+  - New dates that match another line of the same rate and guests move the rooms into that line.
+  - 404 when the line isn't in this cart.
+- **Removing** (`DELETE /api/cart/items/{id}`) always answers 204.
+- **Merging** (`POST /api/cart/merge`, at most 20 items, else 400) adds each item like `POST /items`, with one
+  difference: a line already in the cart keeps the larger quantity and its `priceAtAdd`. The same pick on two
+  devices doesn't double the rooms, and sending the merge again changes nothing.
+  - New lines start at the merge's current price.
+  - Items that can't be added are skipped, and the answer is `{cart, skipped: [{index, reason}]}`.
+- **Expiry** (C-CART-04): `CartExpiryJob` deletes lines whose check-in is before `SearchCriteria.today()`, hourly by
+  default (`APP_CART_EXPIRY_CRON`). That date is the one at UTC−12, so a line goes only once its check-in has passed
+  everywhere.
+- Every write locks the user's `carts` row, so concurrent edits of one cart run one after the other. The first add
+  creates the row; two first adds at the same moment give one 409.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $BASE/api/cart/items \
+  -d '{"ratePlanId": 1, "checkIn": "2026-12-01", "checkOut": "2026-12-03", "quantity": 1, "adults": 2}'
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/cart
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $BASE/api/cart/items/1 \
+  -d '{"checkIn": "2026-12-02", "checkOut": "2026-12-04", "quantity": 2}'
+```
+
 ## Tests
 
 ```bash
@@ -465,6 +529,14 @@ curl -s "$BASE/api/hotels/my-khe-beach-resort-demo/reviews?sort=score,desc"
 | `ReviewServiceImplTest` | unit | default and tie-break order, unsupported sort and unknown hotel before any review query |
 | `RateLimitFilterTest` | full app | each limit enforced with 429 problem+json and `Retry-After`, before the body is read, per address, shared buckets, 401s count, health never limited |
 | `RateLimiterTest` | unit | capacity, gradual refill, rounded-up wait, separate buckets per client and limit, IPv6 /64 and IPv4-mapped client keys |
+| `RateLimitPolicyTest` | unit | the cart's priced calls spend from `search`, removing a line doesn't, search endpoints keep it |
+| `CartControllerTest` | full app | every line and group field, the same line adds up (ages in any order), groups by hotel and dates, 404/400/409 checks leaving the cart unchanged, rooms shared by a group's lines of one room type, full cart, one cart per user, sign-in required |
+| `CartControllerPricesTest` | full app | changed price with old and new, not enough rooms, unavailable (closed night, inactive plan, unlisted hotel), passed check-in, same price and terms as the hotel page, group total of available lines only |
+| `CartControllerEditTest` | full app | quantity edit keeps the notice, new dates move the line at today's price, dates onto another line merge them, rejected edits change nothing, other users' lines, idempotent remove |
+| `CartControllerMergeTest` | full app | browser items added, larger quantity kept, second merge changes nothing, skipped items with index and reason, merged lines share the rooms check, item limit |
+| `CartItemRepositoryTest` | full app | `child_ages` mapping and sorting, one line per rate/stay/guests, the expiry delete, the cart row lock |
+| `CartServiceImplTest` | unit | empty cart reads only its lines, passed lines aren't priced, one room-list call per stay and guests, not-enough-rooms per group and room type |
+| `CartExpiryTest` | full app | passed lines reported, then deleted; today's check-in kept |
 
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
 Full-app tests use `@IntegrationTest` (`src/test/.../support`). Every class shares one Spring context and one
@@ -475,7 +547,9 @@ Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, 
 themselves (the `test` profile never schedules it). `CatalogFixtures.roomType` also adds a sellable rate plan
 (`bareRoomType` adds none). `hotelAmenity`, `roomAmenity` and `bed` attach V6 reference rows. Tax rules apply to a whole country, so tax tests use their own user-assigned country codes
 (`XA`–`XZ`). `review` inserts reviews with a made-up `booking_id` (no bookings table yet), written by a `user()` that
-can't sign in. The `test` profile exempts MockMvc's `127.0.0.1` from rate limits, so `RateLimitFilterTest` sends
+can't sign in. `defaultRatePlan` returns the plan `roomType` added, `cartItem` writes cart lines the API would
+refuse (check-ins already past), and `userId` reads an account's id; cart controller tests sign up through their
+`CartClient`. The `test` profile exempts MockMvc's `127.0.0.1` from rate limits, so `RateLimitFilterTest` sends
 from its own `203.0.113.x` addresses. Unit tests use Mockito and start no Spring context.
 
 `TestProjectApplication` (in `src/test`) runs the app against a Testcontainers database instead of Docker Compose.
@@ -518,6 +592,9 @@ src/main/java/com/company/project/
 │   └── controller/  config/  model/  dto/  mapper/  services/ (+ impl/)
 ├── wishlist/                            each user's saved hotels
 │   └── controller/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
+├── cart/                                each user's cart, priced live by the hotel page's room list
+│   ├── controller/  config/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
+│   └── expiry/                          scheduled delete of lines whose check-in passed
 └── review/                              hotel reviews, read on the hotel page
     └── controller/  model/  repository/  dto/  mapper/  services/ (+ impl/)
 src/main/resources/
@@ -526,7 +603,8 @@ src/main/resources/
 ├── application-prod.yml                 production overrides
 ├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions,
 │                                        V5 rates + taxes + night_price(), V6 amenities + beds +
-│                                        free_cancellation_until(), V7 wishlists, V8 hotel policies + reviews
+│                                        free_cancellation_until(), V7 wishlists, V8 hotel policies + reviews,
+│                                        V9 carts
 └── db/seed/R__demo_catalog.sql          demo hotels, local profile only
 ```
 
@@ -602,6 +680,7 @@ Profiles: `local` is the default when none is set (reads `.env`, starts Docker C
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_PORT` | app / app / required / 5432 | local Compose database |
 | `APP_DESTINATIONS_SYNC_CRON` | `0 */10 * * * *` | destination sync schedule (Spring cron, six fields); `-` disables it |
 | `APP_DESTINATIONS_SYNC_ON_STARTUP` | `true` | run the destination sync once when the app is ready |
+| `APP_CART_EXPIRY_CRON` | `0 0 * * * *` | when to delete cart lines whose check-in passed (Spring cron, six fields); `-` disables it |
 | `APP_RATE_LIMIT_ENABLED` | `true` | `false` turns every rate limit off, e.g. when a gateway limits instead |
 | `APP_RATE_LIMIT_EXEMPT_ADDRESSES` | empty | comma-separated client addresses never limited, e.g. an internal monitor; `127.0.0.1` in a local `.env` keeps you from limiting yourself |
 
@@ -609,7 +688,8 @@ Access token lifetime is `app.jwt.access-token-ttl` (default `15m`) in `applicat
 `app.auth.*` there: `refresh-token-ttl` 1d, `remember-me-ttl` 30d, `email-verification-ttl` 24h,
 `password-reset-ttl` 30m, `email-cooldown` 1m, and `lockout` (`max-attempts` 5, `window` 15m, `duration` 15m). Search limits are `app.search.*`
 there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `max-children` 10,
-`rating-sort-min-reviews` 10). Rate limits are `app.rate-limit.limits.*` there (`capacity` per `period`, values in the
+`rating-sort-min-reviews` 10); cart quantities and guests follow them, and `app.cart.max-items` (20) caps the lines
+of one cart. Rate limits are `app.rate-limit.limits.*` there (`capacity` per `period`, values in the
 table under Endpoints), and `max-tracked-clients` (50000) caps how many clients each limit remembers.
 
 ## Production notes
@@ -638,10 +718,12 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
 2. Rename `groupId`/`artifactId`/`name` in `pom.xml`, the `com.company.project` package (and `ProjectApplication`
    if you like), and `spring.application.name`.
 3. Delete or replace the `product` feature and `V2__create_product_tables.sql`, and the hotel features if you don't
-   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `wishlist/`, `review/`, `SchedulingConfig`,
-   `V3__create_hotel_catalog_tables.sql`, `V5__create_rate_and_tax_tables.sql`, `V6__create_amenity_and_bed_tables.sql`,
-   `V7__create_wishlist_table.sql`, `V8__create_hotel_policy_and_review_tables.sql`, `db/seed/`, the `app.search` /
-   `app.destinations` settings and their `SecurityConfig` matchers). If the copy is
+   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `wishlist/`, `review/`, `cart/`,
+   `SchedulingConfig`, `V3__create_hotel_catalog_tables.sql`, `V5__create_rate_and_tax_tables.sql`,
+   `V6__create_amenity_and_bed_tables.sql`, `V7__create_wishlist_table.sql`,
+   `V8__create_hotel_policy_and_review_tables.sql`, `V9__create_cart_tables.sql`, `db/seed/`, the `app.search` /
+   `app.destinations` / `app.cart` settings, their `SecurityConfig` matchers and the cart paths in
+   `RateLimitPolicy`). If the copy is
    brand new and has never run, you may renumber migrations.
 4. `git init`.
 
@@ -685,3 +767,12 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
   a fractional `NIGHTS` penalty is charged pro rata; refunds (C-MYBK-03) will settle both. `fitsGuests` uses the
   search's even split, so a room type that would work in an uneven mix shows `false`. `roomsLeft` is the exact count;
   the client decides when to say "Only N left".
+- **The cart can't be checked out yet, and holds nothing.** Checkout of a group, and rejecting one that mixes hotels
+  or dates, come with bookings (C-BOOK-01), and rooms are held only once checkout starts (C-BOOK-04).
+- **Cart prices have the search's limits.** They are per room in the hotel's currency, with a tax yes/no flag, and
+  without conversion, tax amounts or discounts (C-SRCH-05, C-BOOK-02/03).
+- **Merged lines lose the browser's price notice.** A merged guest line starts at the merge's price, because the
+  server doesn't trust a price the client sends.
+- **A cart read prices each distinct stay and guests separately.** That is at most 20 room-list queries per read, and
+  the cart's priced calls share the `search` rate limit.
+- **Empty `carts` rows are kept.** The expiry job deletes lines, not the carts that held them.

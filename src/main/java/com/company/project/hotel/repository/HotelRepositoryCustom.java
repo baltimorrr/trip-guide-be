@@ -21,6 +21,9 @@ public interface HotelRepositoryCustom {
 	/** Cards for these hotels, in no particular order. */
 	List<HotelCardView> findCardsByIdIn(Collection<Long> ids);
 
+	/** Those of these hotels that are listed, in no particular order. */
+	List<Long> findListedIds(Collection<Long> ids);
+
 	/** Best-rated listed hotels inside a destination. */
 	List<HotelCardView> findTopInDestination(long destinationId, int limit);
 

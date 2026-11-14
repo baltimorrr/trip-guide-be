@@ -1,6 +1,6 @@
 # Hotel Booking Platform – User Stories
 
-Last updated: 28 Oct 2026 · matches database design `hotel_booking.dbml` (54 tables)
+Last updated: 13 Nov 2026 · matches database design `hotel_booking.dbml` (54 tables)
 
 ## Changes in this version
 
@@ -19,6 +19,7 @@ Updated to match the decisions taken during the database design. Changed stories
 | Season and weekend prices plus single-date overrides | O-ROOM-03 |
 | Sign-in uses a short-lived access token and a refresh token stored per device | C-AUTH-02, C-AUTH-05 |
 | Sold-out hotels are hidden from results; a multi-room search is priced as the cheapest mix of room types | C-SRCH-01 |
+| The cart holds rooms from several hotels and dates; each checkout books one hotel for one date range | C-CART-01 |
 
 ## Overview
 
@@ -163,16 +164,22 @@ The platform has a client site for travellers and an admin site shared by hotel 
 
 ## 5. Client – Cart and checkout
 
-1. **C-CART-01 Add rooms to cart (MVP)** — As a guest, I want to add one or more rooms of a hotel to my cart so that I can book them together later.
+1. **C-CART-01 Add rooms to cart (MVP) (updated) 🟡 Partly implemented** — As a guest, I want to add rooms from one or more hotels to my cart so that I can book them later.
    - Cart item stores: hotel, room option (room type + board + cancellation rate), quantity, dates and guests per room.
-   - A cart holds rooms from one hotel at a time; adding a room from another hotel asks whether to replace the cart (decision needed — see open questions).
+   - A cart can hold rooms from several hotels and for different dates: adding a room keeps the items already in the cart (decided 13 Nov 2026). The cart groups its items by hotel and date range.
+   - A checkout books one group: the rooms of one hotel for one date range, which become one booking (C-BOOK-01) with one payment. The client starts checkout from a group, and the API rejects a checkout with rooms from more than one hotel or for different dates. The other groups stay in the cart, and each one is checked out on its own.
    - Guest carts are kept in the browser and merged into the account on sign-in.
-2. **C-CART-02 Live cart prices (MVP)** — As a customer, I want the cart to always show the current price and availability so that I'm not misled.
+   - Decided 13 Nov 2026: the server keeps carts for signed-in customers only. The browser sends its cart once after sign-in. A room already in the account's cart keeps the larger of the two quantities, so the same choice made on two devices isn't doubled. Adding a room that is already in the cart adds the quantities up.
+   - Left: the checkout itself and its rejection of rooms from several hotels or dates, which come with C-BOOK-01. The cart already groups its items by hotel and date range and says whether each group can be checked out.
+2. **C-CART-02 Live cart prices (MVP) ✅ Implemented** — As a customer, I want the cart to always show the current price and availability so that I'm not misled.
    - Prices are not locked when added; they are re-calculated each time the cart is opened and again at checkout.
    - If a price changed since adding, the item shows the old and new price with a notice.
    - If a room is no longer available, it is marked unavailable and cannot be checked out.
-3. **C-CART-03 Edit cart (MVP)** — As a customer, I want to change quantity, remove items or change dates in the cart so that I can adjust my booking.
-4. **C-CART-04 Cart expiry [Added] (Phase 2)** — As the system, I want to clear cart items whose check-in date has passed so that the cart stays valid.
+   - The cart uses the hotel page's prices and availability, so they always match. An item can also be marked as having too few rooms left for its group, or as past its check-in date. The price check at checkout itself belongs to C-BOOK-04.
+3. **C-CART-03 Edit cart (MVP) ✅ Implemented** — As a customer, I want to change quantity, remove items or change dates in the cart so that I can adjust my booking.
+   - A new quantity or new dates are checked like a new room. Changing only the quantity keeps the "price changed" notice; new dates take today's price. New dates that match another item of the same rate and guests join the two.
+4. **C-CART-04 Cart expiry [Added] (Phase 2) ✅ Implemented** — As the system, I want to clear cart items whose check-in date has passed so that the cart stays valid.
+   - An hourly job deletes them, and until it runs the cart already shows them as past check-in.
 5. **C-BOOK-01 Multi-room booking (MVP)** — As a customer, I want to book several rooms (same or different types) of one hotel in a single booking so that my group stays together with one payment.
    - One booking = one hotel, one date range, one or more room lines.
    - Each room line can carry its own guest count and lead guest name.
@@ -395,11 +402,11 @@ The original requirements name the admin only as the approver of owner changes; 
 - [x] Destinations are synced from hotel addresses; search history is not stored.
 - [x] Sold-out hotels are hidden from search results, not shown as "Sold out".
 - [x] Sessions: the refresh token rotates on every use and reusing an old one revokes the session; the last used time is stored, no device name. Every request checks the access token's session, so sign-out takes effect at once.
+- [x] The cart holds rooms from any number of hotels and dates; each checkout books one hotel for one date range (one booking, one payment), checked by both the client and the API.
 
 **Open questions to decide**
 
 - [ ] Can guests book without signing in, or is an account required?
-- [ ] Can the cart hold rooms from several hotels (checked out one hotel at a time), or one hotel only?
 - [ ] Season/weekend pricing: keep reusable price rules, or only bulk-edit daily prices?
 - [ ] Which currency is the card charged in: the hotel's currency, the platform's base currency, or the customer's chosen currency?
 - [ ] Who funds discount codes: the platform, the hotel, or shared?
