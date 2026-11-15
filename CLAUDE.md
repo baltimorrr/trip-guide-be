@@ -17,10 +17,11 @@ slice of A-CONT-01 that curates destinations, the email-account stories C-AUTH-0
 migration V4; emails are only logged), the wishlist C-SRCH-08 (`wishlist/`, migration V7; search results don't
 mark saved hotels, clients draw the hearts from `GET /api/wishlist`), and the hotel page C-HOTEL-01/02/03/04/06/07
 (`hotel/` controller and service, `review/`, migration V8: `hotel_policies`, `reviews`; reviews are read-only until
-C-MYBK-05), and the cart C-CART-01/02/03/04 (`cart/`, migration V9; checking out a group waits for bookings,
-C-BOOK-01). The schema doc says it was generated from a `schema.sql` that is not in this repo. **Decided
+C-MYBK-05), the cart C-CART-01/02/03/04 (`cart/`, migration V9), and checkout C-BOOK-01..06 (`booking/`,
+`discount/`, migration V10: a quote, then a Pending booking that holds its rooms; payment waits for C-PAY-01, so every
+booking expires when its hold ends). The schema doc says it was generated from a `schema.sql` that is not in this repo. **Decided
 (2026-10-28), hotel page:** `reviews` follows the doc exactly (`booking_id` not null and unique; its FK is added by
-the migration that creates `bookings`), so the demo seed has no reviews; room types that don't fit the guests are
+the migration that creates `bookings`, V10), so the demo seed has no reviews; room types that don't fit the guests are
 listed last with `fitsGuests: false`, not hidden.
 
 **Decided (2026-10-21): new tables keep the schema doc's table and column names but follow this project's
@@ -41,7 +42,11 @@ registration, the email-sending endpoints and the priced search. Counts live in 
 Caffeine), not in a shared store. **Decided (2026-11-13), cart:** carts are server-side for signed-in users only
 (`carts.user_id` not null and unique, no `guest_token`; the doc was edited to match). Guests keep theirs in the
 browser and send it to `POST /api/cart/merge` after signing in. On merge a line already in the cart keeps the larger
-quantity, while adding a line again (`POST /api/cart/items`) adds the quantities up. Still open: roles
+quantity, while adding a line again (`POST /api/cart/items`) adds the quantities up. **Decided (2026-11-14), bookings:** an
+account is required (checkout starts from the server cart, `bookings.user_id` not null); a booking is charged in the
+hotel's currency, and the display-currency total waits for exchange rates (C-SRCH-05); the booked lines leave the
+cart when the Pending booking is created; the rooms are held from that moment (the guest form is submitted), not
+from the quote, because every booking row needs the booker and accepted terms. Still open: roles
 (`customer/hotel_owner/hotel_staff/admin` vs code's `USER/ADMIN`). Ask before changing it.
 
 ## Commands
@@ -241,6 +246,38 @@ The rest works as follows:
   - `CartItem.childAges` (`Short[]` ↔ `smallint[]`) is the first array-mapped entity field.
   - The merge catches `BusinessException` per item, which is safe only because every check throws before anything
     is written. Never catch database exceptions there.
+- Checkout (`BookingServiceImpl`) prices a cart group with the cart's rules (one `findRoomRates` call per guests
+  per room, a group's lines of one room type sharing `roomsLeft`) and never prices on its own either.
+  `BookingControllerQuoteTest#aLineCostsWhatTheCartShowsForIt` keeps the quote and the cart equal. The rules
+  maintainers would otherwise break:
+  - `TaxCalculator` (`tax/model`) is the only place tax amounts are computed: per rule, only the nights inside its
+    validity, rounded half up once. `PERCENT` after the discount scales the price by `(subtotal − discount) /
+    subtotal` inside the one division. A fixed tax in another currency refuses checkout (409) rather than
+    under-charge.
+  - A booking write takes its locks in one order: the user's `carts` row, the discount code row
+    (`findLiveByCodeForUpdate`, so usage limits hold), then `room_inventory` rows by room type and night. Keep that
+    order in any new booking write (payment, cancellation), or checkouts can deadlock.
+  - Rooms are held by `RoomInventoryRepository.hold`, a native upsert that adds to `booked_rooms` only where the
+    rooms fit and the night isn't closed, creating missing rows from `room_types.total_rooms`; fewer rows written than
+    nights means "taken", and the caller rolls back. `release` is its twin (locks in the same order).
+    `booked_rooms` counts Pending and Confirmed bookings, so search, the hotel page and the cart drop held rooms with
+    no change to their SQL. `BookingConcurrencyTest` books the last room from two threads.
+  - The total the customer saw comes back as `expectedTotal`; any difference is 409 and nothing is written.
+  - A booking copies what was sold: per room the room name, board code, cancellation policy (`jsonb`, the
+    `CancellationTerms` record via `@JdbcTypeCode(SqlTypes.JSON)`) and nightly prices (`booking_room_nights`, an
+    `@ElementCollection` of `BookingNight`); per tax its rule's name and amount; the partner's commission rate
+    (native read: `partners` has no entity). `commission_minor` stays 0 until payouts.
+  - Status rules are V10's triggers: inserts must be `PENDING`, updates must follow a lifecycle arrow, and every
+    change is logged in `booking_status_history`. Who and why come from the transaction-local settings
+    `app.changed_by` and `app.status_reason` (`BookingRepository.setStatusReason`, called before the change);
+    without `app.changed_by` an insert is logged as the booking's user and an update as the system. Hibernate
+    writes every column on update, so the triggers compare old and new status.
+  - `BookingHoldExpiryJob` expires Pending bookings past `hold_expires_at` in batches of 100, locked with `skip
+    locked`; it releases their rooms and deletes their `discount_redemptions`. A payment confirmation (C-PAY-01) must
+    lock the booking and check it is still Pending, the same way.
+  - Discount codes are stored lowercased (`DiscountCode.normalize`); one per booking; uses are counted from
+    `discount_redemptions`. "First booking only" counts the user's Pending, Confirmed, Checked-in, Checked-out and
+    No-show bookings. `Money` has `@NotNull` components so a request can `@Valid` the total it sends back.
 - Price filter and sort compare one currency (`HotelFilter.priceCurrency`: the request's `currency`, else the most
   common selling currency of the destination's listed hotels) until currency conversion exists (C-SRCH-05).
 - Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels).
@@ -264,11 +301,14 @@ The rest works as follows:
   disables the schedule), and assert only on your own slugs. Featured and popular lists are shared by all tests, so
   assert relative order, not positions. `HotelBuilder` sets stars, type, distance and currency; `hotelAmenity`,
   `roomAmenity` and `bed` link V6 reference rows. A hotel in another currency needs `bareRoomType` plus a
-  `ratePlan(...).currency(...)` in that currency. `review(...)` inserts a review with a random fake `booking_id`
-  (no bookings table yet), written by `user()`, an account that can't sign in. `defaultRatePlan` returns the plan
+  `ratePlan(...).currency(...)` in that currency. `review(...)` inserts a review of `booking(userId, hotelId)`, a past
+  stay inserted Pending and walked to Checked-out through the status triggers, written by `user()`, an account that
+  can't sign in. `defaultRatePlan` returns the plan
   `roomType` added. `cartItem` writes cart lines the API refuses (past check-ins); a test that calls
   `deleteCheckedInBefore` or `removeExpiredItems` deletes every test's past lines, so only past-dated fixtures may be
-  left for it.
+  left for it. `BookingHoldExpiryTest` likewise expires every test's past holds, so no other test leaves a
+  hold in the past. `discountCode(...)` builds codes (give each a `uniqueSuffix()`), and `taxRule(country, name,
+  calcType, ...)` writes any tax type.
 - The `test` profile exempts `127.0.0.1` (MockMvc's address) from rate limits. Buckets live as long as the shared
   context, so a rate limit test sends from its own address (`request.setRemoteAddr`, `203.0.113.x` in
   `RateLimitFilterTest`). `general` and `search` refill within the test's own run, so their tests send until the
@@ -303,8 +343,10 @@ The rest works as follows:
   refreshes sign a device out. It also
   covers the limits of the hotel search (no currency conversion or "recommended" sort, room prices only with a tax
   flag, even split of guests per room, the cost of the filter counts), of the hotel page (read-only reviews and
-  stored ratings, per-room `FIXED` penalties, exact `roomsLeft`) and of the cart (no checkout or holds yet, merged
-  lines start at the merge's price, one room-list query per distinct stay, empty cart rows kept).
+  stored ratings, per-room `FIXED` penalties, exact `roomsLeft`), of the cart (merged lines start at the merge's
+  price, one room-list query per distinct stay, empty cart rows kept) and of checkout (no payment, so every booking
+  expires; no booking GET; hotel currency only; commission amount not computed; hold rows copy `total_rooms`; codes
+  and taxes written by SQL).
 - JPQL bulk updates bypass auditing and versioning: write `update versioned X` and set `updatedAt` yourself (see
   `UserSessionRepositoryImpl`).
 - Public endpoints need a `permitAll` matcher in `SecurityConfig` and an empty `@SecurityRequirements` on the

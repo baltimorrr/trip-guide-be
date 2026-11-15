@@ -1,5 +1,6 @@
 package com.company.project.hotel.repository;
 
+import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +63,9 @@ public interface HotelRepositoryCustom {
 	 * first; empty when the hotel can sell nothing for these nights.
 	 */
 	List<RoomRateView> findRoomRates(long hotelId, StayRequirement stay);
+
+	/** The commission, in percent, the platform takes on the hotel's bookings: its partner's rate. */
+	BigDecimal findCommissionRate(long hotelId);
 
 	/**
 	 * For each filter option, how many listed hotels inside the destination would show if that option were picked

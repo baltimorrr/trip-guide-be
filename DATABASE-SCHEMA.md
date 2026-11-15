@@ -2,7 +2,8 @@
 // Generated from schema.sql (PostgreSQL 16). Paste into https://dbdiagram.io
 // Edited by hand to match the code: destinations (stored spellings), users.first_failed_login_at,
 // user_sessions.previous_token_hash and last_used_at; carts (any hotel, dates per item in cart_items; signed-in
-// users only, so no guest_token); cart_items (one row per rate, stay and guests).
+// users only, so no guest_token); cart_items (one row per rate, stay and guests); discount_codes (money limits need a
+// currency); bookings (discount at most the subtotal; the status triggers read app.changed_by / app.status_reason).
 // Conventions: money = bigint *_minor (cents) + char(3) currency; a night = stay_date in [check_in, check_out)
 
 Project hotel_booking {
@@ -790,7 +791,12 @@ hold_expires_at [name: 'pending_holds', note: 'partial: WHERE (status = \'pendin
 Note: '''
 Trigger bookings_status_check: BEFORE INSERT OR UPDATE OF status -> booking_status_check()
 Trigger bookings_status_log: AFTER INSERT OR UPDATE OF status -> booking_status_log()
+booking_status_check: a booking starts pending; a change must be a lifecycle arrow.
+booking_status_log: writes booking_status_history; changed_by and reason come from the transaction-local settings
+app.changed_by and app.status_reason (set_config(..., true)); without app.changed_by an insert is the booking's user
+and an update the system.
 CHECK ((check_out > check_in))
+CHECK ((discount_minor <= subtotal_minor))
 CHECK ((total_minor = (((subtotal_minor - discount_minor) + tax_minor) + fee_minor)))
 CHECK (((status <> ALL (ARRAY['confirmed'::booking_status, 'checked_in'::booking_status, 'checked_out'::booking_status])) OR (confirmed_at IS NOT NULL)))
 CHECK (((status <> ALL (ARRAY['checked_in'::booking_status, 'checked_out'::booking_status])) OR (checked_in_at IS NOT NULL)))
@@ -973,6 +979,9 @@ Note: '''
 CHECK ((value > (0)::numeric))
 CHECK ((ends_at > starts_at))
 CHECK ((((discount_type = 'percent'::discount_type) AND (value <= (100)::numeric)) OR ((discount_type = 'fixed'::discount_type) AND (currency IS NOT NULL))))
+CHECK (((min_spend_minor IS NULL) AND (max_discount_minor IS NULL)) OR (currency IS NOT NULL))
+Codes are stored lowercased and matched in any case. Money amounts (a fixed value, min spend, max discount) are in
+currency, so such a code applies only to bookings in that currency.
 '''
 }
 

@@ -1,20 +1,21 @@
 package com.company.project.support;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * Inserts hotel-catalog rows, and the reviews of hotels, for integration tests. There are no hotel or review write
- * APIs yet, so tests build their data in SQL. The database is shared and never rolled back: give every place and
+ * Inserts hotel-catalog rows, the reviews of hotels, past bookings and discount codes for integration tests. There
+ * are no hotel, review or discount write APIs yet, so tests build their data in SQL. The database is shared and never rolled back: give every place and
  * hotel a {@link #uniqueSuffix()} and assert only on your own rows.
  */
 public final class CatalogFixtures {
@@ -238,6 +239,42 @@ public final class CatalogFixtures {
 			.single();
 	}
 
+	/**
+	 * A stay of the user at the hotel that ended a week ago, with no rooms. It is inserted Pending and walked to
+	 * CHECKED_OUT, so the status triggers run as they do for real bookings; every review needs one.
+	 */
+	public long booking(long userId, long hotelId) {
+		long bookingId = jdbc.sql("""
+				insert into bookings (reference, user_id, hotel_id, check_in, check_out, booker_name, booker_email,
+				                      booker_phone, terms_accepted_at, currency, subtotal_minor, total_minor,
+				                      commission_rate, hold_expires_at, created_at, updated_at)
+				values ('HB' || upper(:suffix), :userId, :hotelId, current_date - 9, current_date - 7, 'Booker',
+				        'booker-' || :suffix || '@test.local', '+84901234567', now(), 'VND', :price, :price, 15,
+				        now() + interval '15 minutes', now(), now())
+				returning id""")
+			.param("suffix", uniqueSuffix())
+			.param("userId", userId)
+			.param("hotelId", hotelId)
+			.param("price", DEFAULT_PRICE * 2)
+			.query(Long.class)
+			.single();
+		jdbc.sql("update bookings set status = 'CONFIRMED', confirmed_at = now() where id = :id")
+			.param("id", bookingId)
+			.update();
+		jdbc.sql("update bookings set status = 'CHECKED_IN', checked_in_at = now() where id = :id")
+			.param("id", bookingId)
+			.update();
+		jdbc.sql("update bookings set status = 'CHECKED_OUT', checked_out_at = now() where id = :id")
+			.param("id", bookingId)
+			.update();
+		return bookingId;
+	}
+
+	/** A discount code, stored lowercased; by default 10% off at every hotel, live from yesterday for 30 days. */
+	public DiscountCodeBuilder discountCode(String code) {
+		return new DiscountCodeBuilder(code);
+	}
+
 	/** A review of the hotel by {@code userId} with a score from 1 to 10. */
 	public ReviewBuilder review(long hotelId, long userId, int score) {
 		return new ReviewBuilder(hotelId, userId, score);
@@ -300,6 +337,26 @@ public final class CatalogFixtures {
 			.param("included", included)
 			.param("validFrom", validFrom)
 			.param("validTo", validTo)
+			.update();
+	}
+
+	/**
+	 * Any tax rule for a whole country, valid on every date: {@code calcType} {@code PERCENT} (no currency) or a fixed
+	 * type with {@code value} in major units of {@code currency}. Use a test country ({@code XA}–{@code XZ}).
+	 */
+	public void taxRule(String countryCode, String name, String calcType, String value, String currency,
+			boolean included, boolean afterDiscount) {
+		jdbc.sql("""
+				insert into tax_rules (country_code, name, calc_type, value, currency, is_included,
+				                       applies_after_discount, created_at, updated_at)
+				values (:countryCode, :name, :calcType, :value, :currency, :included, :afterDiscount, now(), now())""")
+			.param("countryCode", countryCode)
+			.param("name", name)
+			.param("calcType", calcType)
+			.param("value", new BigDecimal(value))
+			.param("currency", currency)
+			.param("included", included)
+			.param("afterDiscount", afterDiscount)
 			.update();
 	}
 
@@ -448,14 +505,13 @@ public final class CatalogFixtures {
 		}
 
 		public long create() {
-			// No bookings table yet, so booking_id has no foreign key: any number no other review uses will do.
 			return jdbc.sql("""
 					insert into reviews (booking_id, hotel_id, user_id, score, title, body, traveller_type, status,
 					                     owner_reply, owner_replied_at, created_at, updated_at)
 					values (:bookingId, :hotelId, :userId, :score, :title, :body, :travellerType, :status, :ownerReply,
 					        :ownerRepliedAt, :createdAt, :createdAt)
 					returning id""")
-				.param("bookingId", ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE))
+				.param("bookingId", booking(userId, hotelId))
 				.param("hotelId", hotelId)
 				.param("userId", userId)
 				.param("score", score)
@@ -473,6 +529,134 @@ public final class CatalogFixtures {
 	}
 
 	/** Pick one adjustment: {@link #percent}, {@link #amount} or {@link #setPrice}. Priority defaults to 0. */
+	public final class DiscountCodeBuilder {
+
+		private final String code;
+
+		private String type = "PERCENT";
+
+		private String value = "10";
+
+		private String currency;
+
+		private Long maxDiscountMinor;
+
+		private Long minSpendMinor;
+
+		private Instant startsAt = Instant.now().minus(Duration.ofDays(1));
+
+		private Instant endsAt = Instant.now().plus(Duration.ofDays(30));
+
+		private Integer usageLimitTotal;
+
+		private Integer usageLimitPerUser;
+
+		private boolean firstBookingOnly;
+
+		private long[] hotelIds = {};
+
+		private boolean active = true;
+
+		private Instant deletedAt;
+
+		private DiscountCodeBuilder(String code) {
+			this.code = code.toLowerCase(Locale.ROOT);
+		}
+
+		/** {@code value} percent off, capped at {@code maxDiscountMinor} when it is not null (then in {@code currency}). */
+		public DiscountCodeBuilder percent(String value, Long maxDiscountMinor, String currency) {
+			this.type = "PERCENT";
+			this.value = value;
+			this.maxDiscountMinor = maxDiscountMinor;
+			this.currency = currency;
+			return this;
+		}
+
+		/** {@code value} major units of {@code currency} off. */
+		public DiscountCodeBuilder fixed(String value, String currency) {
+			this.type = "FIXED";
+			this.value = value;
+			this.currency = currency;
+			return this;
+		}
+
+		/** The room subtotal must reach {@code minSpendMinor} of the code's {@code currency}. */
+		public DiscountCodeBuilder minSpend(long minSpendMinor, String currency) {
+			this.minSpendMinor = minSpendMinor;
+			this.currency = currency;
+			return this;
+		}
+
+		public DiscountCodeBuilder live(Instant startsAt, Instant endsAt) {
+			this.startsAt = startsAt;
+			this.endsAt = endsAt;
+			return this;
+		}
+
+		public DiscountCodeBuilder limits(Integer total, Integer perUser) {
+			this.usageLimitTotal = total;
+			this.usageLimitPerUser = perUser;
+			return this;
+		}
+
+		public DiscountCodeBuilder firstBookingOnly() {
+			this.firstBookingOnly = true;
+			return this;
+		}
+
+		/** Only these hotels instead of all. */
+		public DiscountCodeBuilder hotels(long... hotelIds) {
+			this.hotelIds = hotelIds;
+			return this;
+		}
+
+		public DiscountCodeBuilder inactive() {
+			this.active = false;
+			return this;
+		}
+
+		public DiscountCodeBuilder deleted() {
+			this.deletedAt = Instant.now();
+			return this;
+		}
+
+		public long create() {
+			long codeId = jdbc.sql("""
+					insert into discount_codes (code, discount_type, value, currency, max_discount_minor,
+					                            min_spend_minor, starts_at, ends_at, usage_limit_total,
+					                            usage_limit_per_user, first_booking_only, applies_to_all_hotels,
+					                            is_active, deleted_at, created_at, updated_at)
+					values (:code, :type, :value, :currency, :maxDiscountMinor, :minSpendMinor, :startsAt, :endsAt,
+					        :usageLimitTotal, :usageLimitPerUser, :firstBookingOnly, :allHotels, :active, :deletedAt,
+					        now(), now())
+					returning id""")
+				.param("code", code)
+				.param("type", type)
+				.param("value", new BigDecimal(value))
+				.param("currency", currency)
+				.param("maxDiscountMinor", maxDiscountMinor)
+				.param("minSpendMinor", minSpendMinor)
+				.param("startsAt", startsAt.atOffset(ZoneOffset.UTC))
+				.param("endsAt", endsAt.atOffset(ZoneOffset.UTC))
+				.param("usageLimitTotal", usageLimitTotal)
+				.param("usageLimitPerUser", usageLimitPerUser)
+				.param("firstBookingOnly", firstBookingOnly)
+				.param("allHotels", hotelIds.length == 0)
+				.param("active", active)
+				.param("deletedAt", deletedAt == null ? null : deletedAt.atOffset(ZoneOffset.UTC))
+				.query(Long.class)
+				.single();
+			for (long hotelId : hotelIds) {
+				jdbc.sql("insert into discount_code_hotels (discount_code_id, hotel_id) values (:codeId, :hotelId)")
+					.param("codeId", codeId)
+					.param("hotelId", hotelId)
+					.update();
+			}
+			return codeId;
+		}
+
+	}
+
 	public final class RateRuleBuilder {
 
 		private final long ratePlanId;

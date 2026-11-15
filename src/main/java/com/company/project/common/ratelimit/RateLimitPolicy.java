@@ -29,7 +29,13 @@ public enum RateLimitPolicy {
 
 	/** The priced availability queries, the most expensive SQL in the app; the cart runs them for every line's stay. */
 	SEARCH(new OrRequestMatcher(get("/api/search/hotels", "/api/search/hotels/filters", "/api/hotels/*/rooms",
-			"/api/cart"), post("/api/cart/items", "/api/cart/merge"), put("/api/cart/items/*")));
+			"/api/cart"), post("/api/cart/items", "/api/cart/merge"), put("/api/cart/items/*"))),
+
+	/**
+	 * Checkout: each call prices a cart group with the search's SQL, and a quote is where discount codes could be
+	 * guessed.
+	 */
+	CHECKOUT(post("/api/bookings/quote", "/api/bookings"));
 
 	private final RequestMatcher matcher;
 
@@ -49,6 +55,7 @@ public enum RateLimitPolicy {
 			case REGISTER -> limits.register();
 			case EMAIL -> limits.email();
 			case SEARCH -> limits.search();
+			case CHECKOUT -> limits.checkout();
 		};
 	}
 

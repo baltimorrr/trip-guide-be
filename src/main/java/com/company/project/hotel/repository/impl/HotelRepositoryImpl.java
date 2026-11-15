@@ -1,5 +1,6 @@
 package com.company.project.hotel.repository.impl;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumMap;
@@ -45,7 +46,8 @@ import org.springframework.data.support.PageableExecutionUtils;
  * ({@code distinct on}); a running sum of free rooms to fill the requested rooms from the cheapest room type up; and
  * array columns of facilities, beds and room features for the filters. It returns ids, quantities and prices only;
  * JPQL loads the cards and the names. The hotel page's room list is native for the same reason and reuses the chain's
- * first steps ({@code nights}, {@code free_rooms}, {@code rate_offers}), so both agree on what can be sold.
+ * first steps ({@code nights}, {@code free_rooms}, {@code rate_offers}), so both agree on what can be sold. The
+ * commission rate is native too, because partners have no entity yet.
  * <p>
  * Filters ({@link HotelFilterSql}) are predicates over the rows of that query, with fixed aliases: {@code c} = a
  * {@code hotel_rows} row, {@code o} = an {@code offers} row, {@code v} = an {@code available} or {@code results} row,
@@ -390,6 +392,10 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 			where a.scope = :scope
 			order by a.groupName, a.name""";
 
+	// Native: partners has no entity until the partner stories (O-ACC-01), so JPQL can't reach it.
+	private static final String COMMISSION_RATE = """
+			select p.commission_rate from hotels h join partners p on p.id = h.partner_id where h.id = :hotelId""";
+
 	private static final String HOTEL_PHOTOS = """
 			select new com.company.project.hotel.repository.HotelPhotoView(p.hotel.id, p.url)
 			from HotelPhoto p
@@ -468,6 +474,13 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 	public Page<HotelOfferView> findAvailableHotel(long hotelId, StayRequirement stay, HotelFilter filter,
 			HotelOrder order, Pageable pageable) {
 		return availableOffers(IS_HOTEL, hotelId, stay, filter, order, pageable);
+	}
+
+	@Override
+	public BigDecimal findCommissionRate(long hotelId) {
+		return (BigDecimal) entityManager.createNativeQuery(COMMISSION_RATE)
+			.setParameter("hotelId", hotelId)
+			.getSingleResult();
 	}
 
 	@Override

@@ -2,9 +2,11 @@ package com.company.project.tax.repository.impl;
 
 import java.time.LocalDate;
 import java.util.Collection;
+import java.util.List;
 import java.util.Set;
 
 import com.company.project.tax.repository.TaxRuleRepositoryCustom;
+import com.company.project.tax.repository.TaxRuleView;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 
@@ -21,6 +23,15 @@ public class TaxRuleRepositoryImpl implements TaxRuleRepositoryCustom {
 			  and (t.validFrom is null or t.validFrom <= :lastNight)
 			  and (t.validTo is null or t.validTo >= :firstNight)""";
 
+	private static final String APPLICABLE = """
+			select new com.company.project.tax.repository.TaxRuleView(t.id, t.name, t.calcType, t.value, t.currency,
+			       t.included, t.appliesAfterDiscount, t.validFrom, t.validTo)
+			from TaxRule t
+			where t.countryCode = :country and t.active
+			  and (t.validFrom is null or t.validFrom <= :lastNight)
+			  and (t.validTo is null or t.validTo >= :firstNight)
+			order by t.id""";
+
 	private final EntityManager entityManager;
 
 	@Override
@@ -31,6 +42,15 @@ public class TaxRuleRepositoryImpl implements TaxRuleRepositoryCustom {
 			.setParameter("firstNight", firstNight)
 			.setParameter("lastNight", lastNight)
 			.getResultList());
+	}
+
+	@Override
+	public List<TaxRuleView> findApplicable(String countryCode, LocalDate firstNight, LocalDate lastNight) {
+		return entityManager.createQuery(APPLICABLE, TaxRuleView.class)
+			.setParameter("country", countryCode)
+			.setParameter("firstNight", firstNight)
+			.setParameter("lastNight", lastNight)
+			.getResultList();
 	}
 
 }

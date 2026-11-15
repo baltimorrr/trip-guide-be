@@ -28,3 +28,6 @@ app:
   cart:
     # Tests call CartService.removeExpiredItems() themselves.
     expiry-cron: "-"
+  booking:
+    # Tests call BookingService.expireHolds() themselves.
+    expiry-cron: "-"

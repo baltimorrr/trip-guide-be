@@ -4,8 +4,6 @@ import static com.company.project.support.CatalogFixtures.uniqueSuffix;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.util.concurrent.ThreadLocalRandom;
-
 import com.company.project.review.model.Review;
 import com.company.project.review.model.ReviewStatus;
 import com.company.project.support.CatalogFixtures;
@@ -18,7 +16,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
-/** The V8 guards on reviews and the derived query the hotel page reads. */
+/** The guards on reviews (V8, and V10's link to bookings) and the derived query the hotel page reads. */
 @IntegrationTest
 class ReviewRepositoryTest {
 
@@ -43,10 +41,16 @@ class ReviewRepositoryTest {
 
 	@Test
 	void oneReviewPerBooking() {
-		long booking = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+		long booking = anyBooking();
 		insert(booking, 8, null, "PUBLISHED");
 
 		assertThatThrownBy(() -> insert(booking, 9, null, "PUBLISHED"))
+			.isInstanceOf(DataIntegrityViolationException.class);
+	}
+
+	@Test
+	void aReviewIsOfAnExistingBooking() {
+		assertThatThrownBy(() -> insert(Long.MAX_VALUE, 8, null, "PUBLISHED"))
 			.isInstanceOf(DataIntegrityViolationException.class);
 	}
 
@@ -94,8 +98,8 @@ class ReviewRepositoryTest {
 			.update();
 	}
 
-	private static long anyBooking() {
-		return ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+	private long anyBooking() {
+		return catalog.booking(reviewer, hotel.id());
 	}
 
 }

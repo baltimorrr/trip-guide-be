@@ -2,6 +2,7 @@ package com.company.project.tax.repository;
 
 import java.time.LocalDate;
 import java.util.Collection;
+import java.util.List;
 import java.util.Set;
 
 /** Hand-written tax rule queries, implemented in {@code impl/TaxRuleRepositoryImpl}. */
@@ -13,5 +14,11 @@ public interface TaxRuleRepositoryCustom {
 	 */
 	Set<String> findCountriesWithTaxesOnTop(Collection<String> countryCodes, LocalDate firstNight,
 			LocalDate lastNight);
+
+	/**
+	 * The country's active rules, included or on top, that apply to at least one night of {@code [firstNight,
+	 * lastNight]}, oldest first.
+	 */
+	List<TaxRuleView> findApplicable(String countryCode, LocalDate firstNight, LocalDate lastNight);
 
 }

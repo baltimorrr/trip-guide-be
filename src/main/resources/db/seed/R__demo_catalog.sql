@@ -141,6 +141,11 @@ begin
     insert into tax_rules (country_code, name, calc_type, value, is_included, created_at, updated_at)
     select 'VN', 'VAT', 'PERCENT', 10, false, now(), now()
     where not exists (select 1 from tax_rules where country_code = 'VN' and name = 'VAT');
+
+    -- Discount code demo (C-BOOK-03): 10% off at every hotel, for a year from the first run of this file.
+    insert into discount_codes (code, description, discount_type, value, starts_at, ends_at, created_at, updated_at)
+    select 'welcome10', 'Demo: 10% off any stay', 'PERCENT', 10, now(), now() + interval '1 year', now(), now()
+    where not exists (select 1 from discount_codes where code = 'welcome10');
 end $$;
 
 -- Filter demo (C-SRCH-02): distance to the city centre, hotel facilities, and the beds and features of each demo

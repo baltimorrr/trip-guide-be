@@ -19,7 +19,8 @@ class RateLimiterTest {
 	private final ManualClock clock = new ManualClock();
 
 	private final RateLimiter limiter = new RateLimiter(new RateLimitProperties(true, List.of(), 1000,
-			new Limits(TEN_PER_MINUTE, TEN_PER_MINUTE, TEN_PER_MINUTE, TEN_PER_MINUTE, TEN_PER_MINUTE)), clock);
+			new Limits(TEN_PER_MINUTE, TEN_PER_MINUTE, TEN_PER_MINUTE, TEN_PER_MINUTE, TEN_PER_MINUTE,
+					TEN_PER_MINUTE)), clock);
 
 	@Test
 	void theCapacityPassesThenTheNextRequestWaitsForOneRefill() {

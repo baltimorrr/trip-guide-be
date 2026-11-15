@@ -89,6 +89,10 @@ app:
       search:
         capacity: 60
         period: 1m
+      # bookings/quote and bookings (checkout: priced like search; codes are checked there) share this one.
+      checkout:
+        capacity: 20
+        period: 1m
   search:
     max-nights: 30
     max-days-ahead: 365
@@ -107,3 +111,8 @@ app:
     max-items: 20
     # Deletes cart lines whose check-in has passed. Spring cron (six fields); "-" disables it.
     expiry-cron: ${APP_CART_EXPIRY_CRON:0 0 * * * *}
+  booking:
+    # How long a new Pending booking holds its rooms while the customer pays.
+    hold: 15m
+    # Expires Pending bookings whose hold has passed and releases their rooms. Spring cron (six fields); "-" disables it.
+    expiry-cron: ${APP_BOOKING_EXPIRY_CRON:0 * * * * *}

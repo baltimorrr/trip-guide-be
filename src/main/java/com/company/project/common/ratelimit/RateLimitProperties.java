@@ -24,7 +24,7 @@ public record RateLimitProperties(boolean enabled, @NotNull List<String> exemptA
 		@Valid @NotNull Limits limits) {
 
 	public record Limits(@Valid @NotNull Limit general, @Valid @NotNull Limit login, @Valid @NotNull Limit register,
-			@Valid @NotNull Limit email, @Valid @NotNull Limit search) {
+			@Valid @NotNull Limit email, @Valid @NotNull Limit search, @Valid @NotNull Limit checkout) {
 	}
 
 	/**

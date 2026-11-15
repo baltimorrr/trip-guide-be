@@ -21,6 +21,14 @@ class RateLimitPolicyTest {
 	}
 
 	@Test
+	void quotingAndBookingShareTheCheckoutLimit() {
+		assertThat(RateLimitPolicy.matching(request("POST", "/api/bookings/quote")))
+			.containsExactly(RateLimitPolicy.GENERAL, RateLimitPolicy.CHECKOUT);
+		assertThat(RateLimitPolicy.matching(request("POST", "/api/bookings")))
+			.containsExactly(RateLimitPolicy.GENERAL, RateLimitPolicy.CHECKOUT);
+	}
+
+	@Test
 	void removingALinePricesNothing() {
 		assertThat(RateLimitPolicy.matching(request("DELETE", "/api/cart/items/12")))
 			.containsExactly(RateLimitPolicy.GENERAL);

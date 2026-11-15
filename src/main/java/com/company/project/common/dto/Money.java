@@ -4,11 +4,14 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Currency;
 
+import jakarta.validation.constraints.NotNull;
+
 /**
  * An amount in major units of an ISO 4217 currency: {@code {"amount": 129.50, "currency": "USD"}},
  * {@code {"amount": 2400000, "currency": "VND"}}. The database keeps money as whole minor units ({@code *_minor}).
+ * A request that sends one back (a booking's expected total) validates it with {@code @Valid}.
  */
-public record Money(BigDecimal amount, String currency) {
+public record Money(@NotNull BigDecimal amount, @NotNull String currency) {
 
 	/** {@code minor} cents (or the currency's smallest unit), scaled by the currency's ISO 4217 decimal digits. */
 	public static Money ofMinor(long minor, String currency) {

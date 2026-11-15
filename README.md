@@ -14,7 +14,9 @@ See [Wishlist](#wishlist). Each hotel has a public page: overview, facilities an
 stay with their cancellation penalties, and reviews (C-HOTEL-01/02/03/04/06/07). See
 [Hotel detail page](#hotel-detail-page). Signed-in customers keep a cart of rooms from any hotels and dates, priced
 again on every read and grouped into future bookings, and a guest's browser cart merges into it on sign-in
-(C-CART-01/02/03/04). See [Cart](#cart).
+(C-CART-01/02/03/04). See [Cart](#cart). A cart group is checked out into one booking: a quote with the price
+breakdown, a discount code and the taxes, then a Pending booking that holds its rooms for 15 minutes while the
+customer pays (C-BOOK-01..06; payment itself is not built yet). See [Bookings and checkout](#bookings-and-checkout).
 
 ## Stack
 
@@ -128,6 +130,8 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 | PUT | `/api/cart/items/{id}` | authenticated | `{checkIn, checkOut, quantity}` → the cart; errors as for adding, 404 not in this cart |
 | DELETE | `/api/cart/items/{id}` | authenticated | always 204 |
 | POST | `/api/cart/merge` | authenticated | `{items: [...]}` (the browser cart) → `{cart, skipped}`; 400 more items than a cart holds |
+| POST | `/api/bookings/quote` | authenticated | `{cartItemIds, discountCode?}` → hotel, lines, `price` (subtotal, discount, taxes, total) and the booker from the profile; 400 lines of several hotels or dates, or a refused code; 404 not in the cart; 409 can't be booked now |
+| POST | `/api/bookings` | authenticated | `{cartItemIds, discountCode?, expectedTotal, booker, guestName?, specialRequests?, estimatedArrival?, leadGuests?, acceptedTerms}` → 201 Pending booking; errors as for a quote, plus 400 invalid guest details or terms not accepted, 409 total changed or rooms just taken |
 | GET | `/api/admin/destinations?q=` | ADMIN | paged; name prefix, featured first |
 | PUT | `/api/admin/destinations/{id}` | ADMIN | `{name, imageUrl, featuredRank}`; `featuredRank: null` = not featured |
 | POST | `/api/admin/destinations/sync` | ADMIN | runs the destination sync now: `{created, withHotels}` |
@@ -151,6 +155,7 @@ limit on top. Endpoints listed together share one count:
 | `register` | `POST /api/auth/register` | 10 per hour |
 | `email` | `POST /api/auth/verify-email/resend`, `POST /api/auth/password/forgot` | 10 per hour |
 | `search` | `GET /api/search/hotels`, `/api/search/hotels/filters`, `/api/hotels/{slug}/rooms`, `/api/cart`; `POST /api/cart/items`, `/api/cart/merge`; `PUT /api/cart/items/{id}` | 60 per minute |
+| `checkout` | `POST /api/bookings/quote`, `POST /api/bookings` | 20 per minute |
 
 A request under a specific limit also counts toward `general`. Counts come back gradually, not all at once: after 10
 sign-ins, one more is allowed every 6 seconds. Over a limit, the API answers `429` problem+json
@@ -429,7 +434,7 @@ After signing in, the client sends it once to `POST /api/cart/merge`.
 - **Lines and groups.** A line is `quantity` rooms of one rate plan (room type + board + cancellation) for one stay,
   with the same `adults` and `childAges` in each room. The cart has one line per rate, stay and guests; the same ages
   in another order are the same line. Lines are grouped by hotel and date range, and a group is what one checkout
-  will book as one booking (C-BOOK-01, not built yet). Groups come by check-in, then hotel name. Lines come in the
+  will book as one booking (see [Bookings and checkout](#bookings-and-checkout)). Groups come by check-in, then hotel name. Lines come in the
   order they were added. A cart holds at most 20 lines (`app.cart.max-items`).
 - **Live prices** (`GET /api/cart`, C-CART-02). Nothing is locked when a line is added. Every read prices each line
   with the hotel page's room list (one call per hotel, dates and guests per room), so the cart, the room list and the
@@ -475,6 +480,72 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $B
 curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/cart
 curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $BASE/api/cart/items/1 \
   -d '{"checkIn": "2026-12-02", "checkOut": "2026-12-04", "quantity": 2}'
+```
+
+## Bookings and checkout
+
+A checkout books one cart group, the rooms of one hotel for one date range, as one booking paid once
+(C-BOOK-01..06). It needs an access token, and it starts from the server cart. The client quotes the group, shows the
+breakdown and the guest form, then books it.
+
+- **Quote** (`POST /api/bookings/quote`, `{cartItemIds, discountCode?}`). It writes nothing and returns:
+  - the hotel and the stay
+  - each line: rate, board, quantity, guests, `pricePerRoom`, `subtotal` (nights × rate × quantity) and its
+    `cancellation` terms
+  - `price`: `subtotal`, `discount` (`{code, amount}` or null), `taxes` (`[{name, included, amount}]`) and `total`
+  - `booker`, pre-filled from the profile (the phone and country are null until saved)
+
+  Lines are priced like the cart (the hotel page's room list; a group's lines of one room type share `roomsLeft`).
+  Lines of more than one hotel or date range are 400, and a line not in the user's cart is 404. A line that can't be
+  booked now is 409: check-in passed, the rate no longer sells the stay, or too few rooms are left.
+- **Money** is in the hotel's currency, which is also the currency the booking is charged in. A total in the
+  customer's display currency waits for exchange rates (C-SRCH-05).
+  - **Taxes** are the active rules of the hotel's country (`tax_rules`) covering at least one night. Each rule
+    covers only the nights inside its validity and is rounded half up once:
+    - `PERCENT`: value % of the room price, or the share already inside it when `included`. With
+      `applies_after_discount` (the default), the price is taken after the discount.
+    - `PER_NIGHT`: value × rooms × nights. `PER_PERSON_NIGHT`: value × guests × nights. `PER_BOOKING`: value once.
+
+    Included taxes are listed but not added: `total = subtotal − discount + the other taxes`. A fixed tax in a
+    currency other than the hotel's makes checkout 409 until conversion exists.
+  - **Discount codes** (one per booking) match in any case. A refused code is 400 with the reason:
+    - not valid (unknown, inactive or deleted), not active yet, expired
+    - another hotel, another currency, a minimum spend not met
+    - used up, already used by this user, first booking only
+
+    A percent code is capped by its `max_discount_minor`, and no code takes off more than the subtotal. Codes are
+    written with SQL until the admin story (A-DISC-01); the demo seed has `welcome10`.
+- **Booking** (`POST /api/bookings`, 201). Send the quote's `price.total` as `expectedTotal`, plus:
+  - `booker {fullName, email, phone, countryCode}`, all required
+  - `guestName` when booking for someone else
+  - `specialRequests`: at most 1000 characters, passed to the hotel and not guaranteed
+  - `estimatedArrival` (C-BOOK-06), e.g. `"18:30"`, in the hotel's local time
+  - `leadGuests: [{cartItemId, names}]`: optional, at most one name per room
+  - `acceptedTerms: true`, covering the terms, the privacy policy and the rates' cancellation policies
+
+  Under the cart's row lock the lines are priced again (C-BOOK-04). If the total differs from `expectedTotal`, the
+  answer is 409 "The total is now …" and nothing is written; the customer confirms by quoting again. Then the rooms
+  are held: `room_inventory.booked_rooms` grows night by night, only where the rooms still fit, so two customers can
+  never book the last room (the second gets 409). The booking is written `PENDING` with `holdExpiresAt` 15 minutes
+  ahead (`app.booking.hold`). Each room booked is one row, with its guests, lead guest, nightly prices and a copy of
+  its cancellation policy. Each tax is one row too. The code's use is recorded, and the lines leave the cart while its
+  other groups stay. A second submit of the same lines is 404.
+- **Hold expiry.** Payment (C-PAY-01) is not built yet, so every booking stays Pending until its hold ends.
+  `BookingHoldExpiryJob` runs every minute (`APP_BOOKING_EXPIRY_CRON`). It marks bookings past their hold `EXPIRED`,
+  gives their rooms back and deletes their code use.
+- **Status rules live in the database** (V10's triggers). A booking starts `PENDING`, and only the lifecycle's
+  arrows are allowed (Pending → Confirmed → Checked-in → Checked-out; Pending → Cancelled or Expired; Confirmed →
+  Cancelled or No-show). Every change is logged in `booking_status_history`, with who and why.
+
+```bash
+# quote a cart group (cart line ids from GET /api/cart), then book it at the quoted total
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $BASE/api/bookings/quote \
+  -d '{"cartItemIds": [1, 2], "discountCode": "welcome10"}'
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $BASE/api/bookings \
+  -d '{"cartItemIds": [1, 2], "discountCode": "welcome10", "expectedTotal": {"amount": 3960000, "currency": "VND"},
+       "booker": {"fullName": "Jane Doe", "email": "jane@example.com", "phone": "+84901234567", "countryCode": "VN"},
+       "estimatedArrival": "18:30", "acceptedTerms": true}'
+# 409 "The total is now ..." means the price changed: quote again and send the new total
 ```
 
 ## Tests
@@ -529,7 +600,7 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/j
 | `ReviewServiceImplTest` | unit | default and tie-break order, unsupported sort and unknown hotel before any review query |
 | `RateLimitFilterTest` | full app | each limit enforced with 429 problem+json and `Retry-After`, before the body is read, per address, shared buckets, 401s count, health never limited |
 | `RateLimiterTest` | unit | capacity, gradual refill, rounded-up wait, separate buckets per client and limit, IPv6 /64 and IPv4-mapped client keys |
-| `RateLimitPolicyTest` | unit | the cart's priced calls spend from `search`, removing a line doesn't, search endpoints keep it |
+| `RateLimitPolicyTest` | unit | the cart's priced calls spend from `search`, quote and booking from `checkout`, removing a line from neither, search endpoints keep theirs |
 | `CartControllerTest` | full app | every line and group field, the same line adds up (ages in any order), groups by hotel and dates, 404/400/409 checks leaving the cart unchanged, rooms shared by a group's lines of one room type, full cart, one cart per user, sign-in required |
 | `CartControllerPricesTest` | full app | changed price with old and new, not enough rooms, unavailable (closed night, inactive plan, unlisted hotel), passed check-in, same price and terms as the hotel page, group total of available lines only |
 | `CartControllerEditTest` | full app | quantity edit keeps the notice, new dates move the line at today's price, dates onto another line merge them, rejected edits change nothing, other users' lines, idempotent remove |
@@ -537,6 +608,15 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/j
 | `CartItemRepositoryTest` | full app | `child_ages` mapping and sorting, one line per rate/stay/guests, the expiry delete, the cart row lock |
 | `CartServiceImplTest` | unit | empty cart reads only its lines, passed lines aren't priced, one room-list call per stay and guests, not-enough-rooms per group and room type |
 | `CartExpiryTest` | full app | passed lines reported, then deleted; today's check-in kept |
+| `BookingControllerQuoteTest` | full app | lines, subtotal, taxes and total of a group; same prices and terms as the cart; included taxes listed not added; several hotels or dates (400), other users' lines (404), unbookable lines (409), rooms shared by a room type's lines; booker from the profile; sign-in required |
+| `BookingControllerDiscountTest` | full app | every refusal message (unknown, inactive, deleted, dates, hotels, currency, minimum spend, usage limits, first booking), percent cap with tax on the discounted price, fixed amount never past the subtotal, any case |
+| `BookingControllerTest` | full app | Pending booking with reference, hold, guest details, arrival time, rooms, nights, taxes and commission; lines leave the cart; held rooms leave the hotel page; changed total refused until confirmed, nothing written; guest details and terms validation; lead guests; code use recorded and counted; same lines booked once |
+| `BookingConcurrencyTest` | full app | two customers booking the last room at once: one booking, one 409, never overbooked (repeated 5 times) |
+| `BookingHoldExpiryTest` | full app | an unpaid hold expires, gives back its rooms and code use, is logged as the system's; a live hold stays |
+| `BookingStatusRulesTest` | full app | a booking starts Pending, only the lifecycle's arrows, every change logged, unchanged status logs nothing, who and why from the transaction's settings |
+| `BookingMappingTest` | full app | a booking with rooms, nights (element collection), jsonb cancellation terms, taxes and arrival time reads back as written |
+| `RoomInventoryRepositoryTest` | full app | a hold creates missing nights, adds to existing ones until full, refuses closed nights and more rooms than the type has |
+| `TaxCalculatorTest`, `BookingReferenceTest` | unit | each tax type, validity per night, after or before the discount, included share, rounding once, other currency refused; reference format |
 
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
 Full-app tests use `@IntegrationTest` (`src/test/.../support`). Every class shares one Spring context and one
@@ -546,10 +626,12 @@ container, so the suite stays fast. Tests create their own data with unique emai
 Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, then call the destination sync
 themselves (the `test` profile never schedules it). `CatalogFixtures.roomType` also adds a sellable rate plan
 (`bareRoomType` adds none). `hotelAmenity`, `roomAmenity` and `bed` attach V6 reference rows. Tax rules apply to a whole country, so tax tests use their own user-assigned country codes
-(`XA`–`XZ`). `review` inserts reviews with a made-up `booking_id` (no bookings table yet), written by a `user()` that
-can't sign in. `defaultRatePlan` returns the plan `roomType` added, `cartItem` writes cart lines the API would
-refuse (check-ins already past), and `userId` reads an account's id; cart controller tests sign up through their
-`CartClient`. The `test` profile exempts MockMvc's `127.0.0.1` from rate limits, so `RateLimitFilterTest` sends
+(`XA`–`XZ`); `taxRule` writes any calc type. `review` inserts reviews of a past stay from `booking(userId, hotelId)`,
+which inserts a booking Pending and walks it to Checked-out through the status triggers; the reviewer is a `user()`
+that can't sign in. `defaultRatePlan` returns the plan `roomType` added, `cartItem` writes cart lines the API would
+refuse (check-ins already past), `discountCode` builds a code, and `userId` reads an account's id; cart and booking
+controller tests sign up through their `CartClient` and `BookingClient`. `BookingHoldExpiryTest` expires every
+test's past holds, so no other test leaves one. The `test` profile exempts MockMvc's `127.0.0.1` from rate limits, so `RateLimitFilterTest` sends
 from its own `203.0.113.x` addresses. Unit tests use Mockito and start no Spring context.
 
 `TestProjectApplication` (in `src/test`) runs the app against a Testcontainers database instead of Docker Compose.
@@ -595,6 +677,11 @@ src/main/java/com/company/project/
 ├── cart/                                each user's cart, priced live by the hotel page's room list
 │   ├── controller/  config/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
 │   └── expiry/                          scheduled delete of lines whose check-in passed
+├── booking/                             checkout: quote, Pending booking with a room hold, guest details
+│   ├── controller/  config/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
+│   └── expiry/                          scheduled expiry of unpaid holds
+├── discount/                            discount codes and their uses
+│   └── model/  repository/ (+ impl/)  services/ (+ impl/)
 └── review/                              hotel reviews, read on the hotel page
     └── controller/  model/  repository/  dto/  mapper/  services/ (+ impl/)
 src/main/resources/
@@ -604,7 +691,7 @@ src/main/resources/
 ├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions,
 │                                        V5 rates + taxes + night_price(), V6 amenities + beds +
 │                                        free_cancellation_until(), V7 wishlists, V8 hotel policies + reviews,
-│                                        V9 carts
+│                                        V9 carts, V10 bookings + discount codes + status triggers
 └── db/seed/R__demo_catalog.sql          demo hotels, local profile only
 ```
 
@@ -681,6 +768,7 @@ Profiles: `local` is the default when none is set (reads `.env`, starts Docker C
 | `APP_DESTINATIONS_SYNC_CRON` | `0 */10 * * * *` | destination sync schedule (Spring cron, six fields); `-` disables it |
 | `APP_DESTINATIONS_SYNC_ON_STARTUP` | `true` | run the destination sync once when the app is ready |
 | `APP_CART_EXPIRY_CRON` | `0 0 * * * *` | when to delete cart lines whose check-in passed (Spring cron, six fields); `-` disables it |
+| `APP_BOOKING_EXPIRY_CRON` | `0 * * * * *` | when to expire Pending bookings whose room hold passed (Spring cron, six fields); `-` disables it |
 | `APP_RATE_LIMIT_ENABLED` | `true` | `false` turns every rate limit off, e.g. when a gateway limits instead |
 | `APP_RATE_LIMIT_EXEMPT_ADDRESSES` | empty | comma-separated client addresses never limited, e.g. an internal monitor; `127.0.0.1` in a local `.env` keeps you from limiting yourself |
 
@@ -689,7 +777,7 @@ Access token lifetime is `app.jwt.access-token-ttl` (default `15m`) in `applicat
 `password-reset-ttl` 30m, `email-cooldown` 1m, and `lockout` (`max-attempts` 5, `window` 15m, `duration` 15m). Search limits are `app.search.*`
 there (`max-nights` 30, `max-days-ahead` 365, `max-rooms` 8, `max-adults` 30, `max-children` 10,
 `rating-sort-min-reviews` 10); cart quantities and guests follow them, and `app.cart.max-items` (20) caps the lines
-of one cart. Rate limits are `app.rate-limit.limits.*` there (`capacity` per `period`, values in the
+of one cart. `app.booking.hold` (15m) is how long a new booking holds its rooms. Rate limits are `app.rate-limit.limits.*` there (`capacity` per `period`, values in the
 table under Endpoints), and `max-tracked-clients` (50000) caps how many clients each limit remembers.
 
 ## Production notes
@@ -718,12 +806,13 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
 2. Rename `groupId`/`artifactId`/`name` in `pom.xml`, the `com.company.project` package (and `ProjectApplication`
    if you like), and `spring.application.name`.
 3. Delete or replace the `product` feature and `V2__create_product_tables.sql`, and the hotel features if you don't
-   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `wishlist/`, `review/`, `cart/`,
+   need them (`hotel/`, `rate/`, `tax/`, `destination/`, `search/`, `wishlist/`, `review/`, `cart/`, `booking/`,
+   `discount/`,
    `SchedulingConfig`, `V3__create_hotel_catalog_tables.sql`, `V5__create_rate_and_tax_tables.sql`,
    `V6__create_amenity_and_bed_tables.sql`, `V7__create_wishlist_table.sql`,
-   `V8__create_hotel_policy_and_review_tables.sql`, `V9__create_cart_tables.sql`, `db/seed/`, the `app.search` /
-   `app.destinations` / `app.cart` settings, their `SecurityConfig` matchers and the cart paths in
-   `RateLimitPolicy`). If the copy is
+   `V8__create_hotel_policy_and_review_tables.sql`, `V9__create_cart_tables.sql`,
+   `V10__create_booking_and_discount_tables.sql`, `db/seed/`, the `app.search` / `app.destinations` / `app.cart` /
+   `app.booking` settings, their `SecurityConfig` matchers and the cart and booking paths in `RateLimitPolicy`). If the copy is
    brand new and has never run, you may renumber migrations.
 4. `git init`.
 
@@ -747,7 +836,7 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
   filter, price sort and price range compare one currency (`currency`). There is no "recommended" sort (C-SRCH-03). Guests are split evenly over the rooms, so a hotel that could only host an uneven
   split (3 adults in a double + a single) is not shown.
 - **Search prices are room prices only.** They don't change with the number of guests or children's ages, tax is a
-  yes/no flag (amounts come with checkout, C-BOOK-02), and there are no discounts or promotions. Rates, policies and
+  yes/no flag (the amounts are in the checkout quote), and discount codes apply only at checkout. Rates, policies and
   taxes have no write endpoints yet: enter them with SQL or the demo seed.
 - **`night_price()` runs once per rate plan and night of every candidate hotel.** That's quick for a city. A
   country-wide search over thousands of hotels may need a precomputed price calendar. The filter counts price every
@@ -761,18 +850,26 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
   `/api/hotels/**` with an expired or invalid `Authorization` header gets 401; clients should drop expired tokens. The
   public account endpoints (`/api/auth/login`, `/refresh`, `/logout`, …) ignore the header.
 - **Reviews are read-only and the hotel ratings are stored, not computed.** Nothing writes reviews until customers
-  can complete stays (C-MYBK-05), so `/reviews` is empty outside tests. `reviews.booking_id` has no foreign key until
-  the `bookings` table exists, and `user_rating_avg`/`user_rating_count` on hotels are not recomputed from reviews.
+  can complete stays (C-MYBK-05), so `/reviews` is empty outside tests, and `user_rating_avg`/`user_rating_count`
+  on hotels are not recomputed from reviews.
 - **Hotel page terms that later stories may change.** A `FIXED` cancellation penalty is per room, like the prices, and
   a fractional `NIGHTS` penalty is charged pro rata; refunds (C-MYBK-03) will settle both. `fitsGuests` uses the
   search's even split, so a room type that would work in an uneven mix shows `false`. `roomsLeft` is the exact count;
   the client decides when to say "Only N left".
-- **The cart can't be checked out yet, and holds nothing.** Checkout of a group, and rejecting one that mixes hotels
-  or dates, come with bookings (C-BOOK-01), and rooms are held only once checkout starts (C-BOOK-04).
 - **Cart prices have the search's limits.** They are per room in the hotel's currency, with a tax yes/no flag, and
-  without conversion, tax amounts or discounts (C-SRCH-05, C-BOOK-02/03).
+  without conversion; the tax amounts and discount codes are in the checkout quote (C-SRCH-05).
 - **Merged lines lose the browser's price notice.** A merged guest line starts at the merge's price, because the
   server doesn't trust a price the client sends.
 - **A cart read prices each distinct stay and guests separately.** That is at most 20 room-list queries per read, and
   the cart's priced calls share the `search` rate limit.
 - **Empty `carts` rows are kept.** The expiry job deletes lines, not the carts that held them.
+- **Bookings can't be paid yet, so every one expires.** Payment and confirmation (C-PAY-01/02) come next. There is no
+  endpoint to read a booking back either: the create response has everything, and the list and detail are
+  C-MYBK-01/02.
+- **Checkout money is in the hotel's currency only.** There is no total in the customer's display currency
+  (C-BOOK-02 waits for C-SRCH-05). A fixed-amount tax or a discount code in another currency can't be used.
+- **The commission amount isn't computed.** Bookings copy the partner's `commission_rate`; `commission_minor` stays 0
+  until payouts (A-PAY-02) settle whether discounts reduce it ("Who funds discount codes" is an open question).
+- **A hold creates the inventory rows it needs** from `room_types.total_rooms`. A later change to a room type's total
+  doesn't reach those nights, as with any `room_inventory` row; the availability calendar (O-ROOM-03) edits them.
+- **Discount codes and tax rules have no write endpoints** (A-DISC-01, A-CONF-02): enter them with SQL.

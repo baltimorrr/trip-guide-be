@@ -60,10 +60,10 @@ The platform has a client site for travellers and an admin site shared by hotel 
    - Left: send the email. The reset link is only written to the server log until an email service is chosen.
 5. **C-AUTH-05 Sign out [Added] (MVP) (updated) ✅ Implemented** — As a customer, I want to sign out so that my account is safe on shared devices.
    - Sign out revokes the session of this device; "Sign out of all devices" revokes every session.
-6. **C-AUTH-06 Manage profile [Added] (MVP) 🟡 Partly implemented** — As a customer, I want to edit my name, phone, nationality and preferred currency so that checkout is pre-filled.
+6. **C-AUTH-06 Manage profile [Added] (MVP) ✅ Implemented** — As a customer, I want to edit my name, phone, nationality and preferred currency so that checkout is pre-filled.
    - Saved details pre-fill the guest information form at checkout (C-BOOK-05).
    - Customer can change password (email accounts only).
-   - Left: the checkout pre-fill itself, which comes with C-BOOK-05. The profile API stores and returns the details.
+   - The checkout quote returns the saved name, email, phone and country as the booker (C-BOOK-05).
 7. **C-AUTH-07 Delete account [Added] (Phase 2)** — As a customer, I want to request deletion of my account and personal data so that my privacy is respected.
    - Booking records needed for accounting are kept but anonymised; wishlist and recently viewed hotels are deleted.
 8. **C-AUTH-08 Book as guest decision [Added]** — Decide whether a guest can book without an account. These stories assume sign-in is required before checkout; search, hotel detail and cart are open to guests.
@@ -164,13 +164,13 @@ The platform has a client site for travellers and an admin site shared by hotel 
 
 ## 5. Client – Cart and checkout
 
-1. **C-CART-01 Add rooms to cart (MVP) (updated) 🟡 Partly implemented** — As a guest, I want to add rooms from one or more hotels to my cart so that I can book them later.
+1. **C-CART-01 Add rooms to cart (MVP) (updated) ✅ Implemented** — As a guest, I want to add rooms from one or more hotels to my cart so that I can book them later.
    - Cart item stores: hotel, room option (room type + board + cancellation rate), quantity, dates and guests per room.
    - A cart can hold rooms from several hotels and for different dates: adding a room keeps the items already in the cart (decided 13 Nov 2026). The cart groups its items by hotel and date range.
    - A checkout books one group: the rooms of one hotel for one date range, which become one booking (C-BOOK-01) with one payment. The client starts checkout from a group, and the API rejects a checkout with rooms from more than one hotel or for different dates. The other groups stay in the cart, and each one is checked out on its own.
    - Guest carts are kept in the browser and merged into the account on sign-in.
    - Decided 13 Nov 2026: the server keeps carts for signed-in customers only. The browser sends its cart once after sign-in. A room already in the account's cart keeps the larger of the two quantities, so the same choice made on two devices isn't doubled. Adding a room that is already in the cart adds the quantities up.
-   - Left: the checkout itself and its rejection of rooms from several hotels or dates, which come with C-BOOK-01. The cart already groups its items by hotel and date range and says whether each group can be checked out.
+   - Checkout (C-BOOK-01) takes the items of one group and rejects items of several hotels or dates.
 2. **C-CART-02 Live cart prices (MVP) ✅ Implemented** — As a customer, I want the cart to always show the current price and availability so that I'm not misled.
    - Prices are not locked when added; they are re-calculated each time the cart is opened and again at checkout.
    - If a price changed since adding, the item shows the old and new price with a notice.
@@ -180,28 +180,35 @@ The platform has a client site for travellers and an admin site shared by hotel 
    - A new quantity or new dates are checked like a new room. Changing only the quantity keeps the "price changed" notice; new dates take today's price. New dates that match another item of the same rate and guests join the two.
 4. **C-CART-04 Cart expiry [Added] (Phase 2) ✅ Implemented** — As the system, I want to clear cart items whose check-in date has passed so that the cart stays valid.
    - An hourly job deletes them, and until it runs the cart already shows them as past check-in.
-5. **C-BOOK-01 Multi-room booking (MVP)** — As a customer, I want to book several rooms (same or different types) of one hotel in a single booking so that my group stays together with one payment.
+5. **C-BOOK-01 Multi-room booking (MVP) ✅ Implemented** — As a customer, I want to book several rooms (same or different types) of one hotel in a single booking so that my group stays together with one payment.
    - One booking = one hotel, one date range, one or more room lines.
    - Each room line can carry its own guest count and lead guest name.
-6. **C-BOOK-02 Price breakdown (MVP) (updated)** — As a customer, I want to see a clear price breakdown before paying so that I know what I'm paying for.
+   - Decided 14 Nov 2026: booking needs an account; the customer books a group of their cart, and the booked items leave the cart when the booking is created. Each room booked is stored on its own, with its guests, lead guest name, nightly prices and the cancellation policy it was sold with.
+6. **C-BOOK-02 Price breakdown (MVP) (updated) 🟡 Partly implemented** — As a customer, I want to see a clear price breakdown before paying so that I know what I'm paying for.
    - Shows: room subtotal per line (nights × rate × quantity), discount, taxes by type (e.g. VAT), and grand total.
    - Tax rules are configured per country (A-CONF-02) and can be included in the price or added on top.
    - Hotel service charges are not shown as a separate line: they are included in the room price set by the owner.
    - Total is shown in the display currency and in the charge currency if they differ.
-7. **C-BOOK-03 Apply discount code (MVP)** — As a customer, I want to apply a discount code so that I get the promised reduction.
+   - Decided 14 Nov 2026: a booking is charged in the hotel's currency. Taxes are calculated per rule for the nights it covers; included taxes are listed with their amount but not added to the total.
+   - Left: the total in the customer's display currency, which needs exchange rates (C-SRCH-05).
+7. **C-BOOK-03 Apply discount code (MVP) ✅ Implemented** — As a customer, I want to apply a discount code so that I get the promised reduction.
    - Code is validated for: active dates, minimum spend, applicable hotels, usage limit (total and per user), first booking only, etc.
    - Clear message when invalid or expired; only one code per booking unless configured otherwise.
    - Tax is calculated on the discounted price by default (configurable per tax rule).
-8. **C-BOOK-04 Re-check before payment (MVP)** — As the system, I want to re-check availability and price right before payment so that I never sell a room that is gone.
+   - Codes match in any case, and each reason a code is refused has its own message. A code's money amounts (fixed value, minimum spend, cap) are in its currency, so it applies only to bookings in that currency. A use is counted from the booking; an unpaid booking that expires gives it back. Codes are created by the admin story (A-DISC-01).
+8. **C-BOOK-04 Re-check before payment (MVP) ✅ Implemented** — As the system, I want to re-check availability and price right before payment so that I never sell a room that is gone.
    - Rooms are held for a short time (e.g. 15 minutes) once checkout starts; the hold is released if payment is not completed.
    - If price or availability changed, the customer must confirm the new total.
    - Two customers can never book the last room at the same time.
-9. **C-BOOK-05 Guest information (MVP)** — As a customer, I want to enter the guest details so that the hotel knows who is arriving.
+   - Decided 14 Nov 2026: the hold starts when the customer submits the guest details and the Pending booking is created (every booking row needs them), not when the breakdown is first shown. The booking request carries the total the customer saw; if the total changed, nothing is booked and the customer confirms the new one. Until payment exists (C-PAY-01), every booking expires when its hold ends.
+9. **C-BOOK-05 Guest information (MVP) ✅ Implemented** — As a customer, I want to enter the guest details so that the hotel knows who is arriving.
    - Booker: full name, email, phone, country. Pre-filled from the profile.
    - Option "I'm booking for someone else" with the main guest's name.
    - Optional special requests (e.g. late check-in, high floor), clearly marked as not guaranteed.
    - Must accept terms, privacy policy and the rate's cancellation policy before paying.
-10. **C-BOOK-06 Estimated arrival time [Added] (Phase 2)** — As a customer, I want to give my estimated arrival time so that the hotel can prepare.
+   - One acceptance covers the terms, the privacy policy and the cancellation policies shown with the breakdown; its time is stored. Phone and country are required even when the profile lacks them.
+10. **C-BOOK-06 Estimated arrival time [Added] (Phase 2) ✅ Implemented** — As a customer, I want to give my estimated arrival time so that the hotel can prepare.
+   - Optional, in the hotel's local time.
 
 ## 6. Client – Payment with Stripe
 
@@ -403,12 +410,12 @@ The original requirements name the admin only as the approver of owner changes; 
 - [x] Sold-out hotels are hidden from search results, not shown as "Sold out".
 - [x] Sessions: the refresh token rotates on every use and reusing an old one revokes the session; the last used time is stored, no device name. Every request checks the access token's session, so sign-out takes effect at once.
 - [x] The cart holds rooms from any number of hotels and dates; each checkout books one hotel for one date range (one booking, one payment), checked by both the client and the API.
+- [x] Booking needs an account: guests sign in (their browser cart merges into the account) before checking out (14 Nov 2026).
+- [x] A booking is charged in the hotel's currency; the total in the customer's display currency comes with exchange rates (14 Nov 2026).
 
 **Open questions to decide**
 
-- [ ] Can guests book without signing in, or is an account required?
 - [ ] Season/weekend pricing: keep reusable price rules, or only bulk-edit daily prices?
-- [ ] Which currency is the card charged in: the hotel's currency, the platform's base currency, or the customer's chosen currency?
 - [ ] Who funds discount codes: the platform, the hotel, or shared?
 - [ ] Can a customer cancel one room from a multi-room booking, or only the whole booking?
 - [ ] Is "user rating" from our own reviews only at launch, and what is shown before a hotel has any reviews?
