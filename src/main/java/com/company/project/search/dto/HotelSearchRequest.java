@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
+import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
@@ -41,12 +42,12 @@ import org.springframework.format.annotation.DateTimeFormat.ISO;
  * destination. Hotels selling in another currency never match a price range and come last when sorting by price.
  */
 public record HotelSearchRequest(
-		@Size(max = 200) String destination,
+		@Parameter(example = "vn-da-nang") @Size(max = 200) String destination,
 		@Size(max = 220) String hotel,
 		@NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate checkIn,
 		@NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate checkOut,
-		@NotNull @Min(1) Integer rooms,
-		@NotNull @Min(1) Integer adults,
+		@Parameter(example = "1") @NotNull @Min(1) Integer rooms,
+		@Parameter(example = "2") @NotNull @Min(1) Integer adults,
 		List<@NotNull @Min(0) @Max(17) Integer> childAges,
 		@Size(max = 100) String name,
 		@Size(max = 5) List<@NotNull @Min(1) @Max(5) Integer> stars,

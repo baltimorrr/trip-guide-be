@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Currency;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 
 /**
@@ -11,7 +12,8 @@ import jakarta.validation.constraints.NotNull;
  * {@code {"amount": 2400000, "currency": "VND"}}. The database keeps money as whole minor units ({@code *_minor}).
  * A request that sends one back (a booking's expected total) validates it with {@code @Valid}.
  */
-public record Money(@NotNull BigDecimal amount, @NotNull String currency) {
+public record Money(@Schema(example = "2400000") @NotNull BigDecimal amount,
+		@Schema(example = "VND") @NotNull String currency) {
 
 	/** {@code minor} cents (or the currency's smallest unit), scaled by the currency's ISO 4217 decimal digits. */
 	public static Money ofMinor(long minor, String currency) {

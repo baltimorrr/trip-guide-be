@@ -1,0 +1,8 @@
+# Keep secrets, build output and local tooling out of the image build.
+.env
+target/
+.git/
+.idea/
+.vscode/
+plans/
+*.iml

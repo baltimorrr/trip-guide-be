@@ -11,6 +11,8 @@ import com.company.project.auth.dto.VerifyEmailRequest;
 import com.company.project.auth.services.AuthService;
 import com.company.project.auth.services.PasswordService;
 import com.company.project.user.dto.UserResponse;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -57,8 +59,15 @@ public class AuthController {
 		authService.resendVerification(request.email());
 	}
 
+	/** Paste the {@code accessToken} of the response into Swagger UI's Authorize to call the other endpoints. */
 	@PostMapping("/login")
 	@SecurityRequirements // public: no bearer token in the API docs
+	// Swagger UI's example dropdown: the demo accounts of the local seed (db/seed/R__demo_catalog.sql).
+	@io.swagger.v3.oas.annotations.parameters.RequestBody(content = @Content(examples = {
+			@ExampleObject(name = "Demo customer", value = """
+					{"email": "demo@example.com", "password": "demo-password-1", "rememberMe": false}"""),
+			@ExampleObject(name = "Demo admin", value = """
+					{"email": "demo-admin@example.com", "password": "demo-admin-password-1", "rememberMe": false}""") }))
 	public TokenResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
 		return authService.login(request, ClientInfo.from(httpRequest));
 	}

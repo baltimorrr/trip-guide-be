@@ -6,6 +6,7 @@ import com.company.project.cart.dto.CartMergeRequest;
 import com.company.project.cart.dto.CartMergeResponse;
 import com.company.project.cart.dto.CartResponse;
 import com.company.project.cart.services.CartService;
+import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -54,7 +55,7 @@ public class CartController {
 	 * match another line the two become one. Errors as for adding, and 404 when the line isn't in this cart.
 	 */
 	@PutMapping("/items/{itemId}")
-	public CartResponse update(@AuthenticationPrincipal Jwt jwt, @PathVariable long itemId,
+	public CartResponse update(@AuthenticationPrincipal Jwt jwt, @Parameter(example = "1") @PathVariable long itemId,
 			@Valid @RequestBody CartItemUpdateRequest request) {
 		return cartService.update(userId(jwt), itemId, request);
 	}
@@ -62,7 +63,7 @@ public class CartController {
 	/** 204 whether or not the line was in this cart. */
 	@DeleteMapping("/items/{itemId}")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
-	public void remove(@AuthenticationPrincipal Jwt jwt, @PathVariable long itemId) {
+	public void remove(@AuthenticationPrincipal Jwt jwt, @Parameter(example = "1") @PathVariable long itemId) {
 		cartService.remove(userId(jwt), itemId);
 	}
 

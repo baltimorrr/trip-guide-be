@@ -3,6 +3,7 @@ package com.company.project.hotel.dto;
 import java.time.LocalDate;
 import java.util.List;
 
+import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
@@ -18,8 +19,8 @@ import org.springframework.format.annotation.DateTimeFormat.ISO;
 public record StayRequest(
 		@NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate checkIn,
 		@NotNull @DateTimeFormat(iso = ISO.DATE) LocalDate checkOut,
-		@NotNull @Min(1) Integer rooms,
-		@NotNull @Min(1) Integer adults,
+		@Parameter(example = "1") @NotNull @Min(1) Integer rooms,
+		@Parameter(example = "2") @NotNull @Min(1) Integer adults,
 		List<@NotNull @Min(0) @Max(17) Integer> childAges) {
 
 	public StayRequest {

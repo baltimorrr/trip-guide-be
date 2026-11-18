@@ -307,3 +307,22 @@ begin
     join hotels h on h.id = rt.hotel_id
     where rp.room_type_id = rt.id and h.slug = 'my-khe-beach-resort-demo' and rp.cancellation_policy_id = free_policy;
 end $$;
+
+-- Demo accounts for trying the API; Swagger's login examples use them. Both are verified, so they sign in at once:
+--   demo@example.com       / demo-password-1        customer (USER); the profile is filled, so checkout pre-fills it
+--   demo-admin@example.com / demo-admin-password-1  ADMIN + USER, like the bootstrap admin
+-- The passwords are public on purpose: this file runs only under the local profile.
+insert into users (email, password_hash, full_name, phone, country_code, preferred_currency, email_verified_at,
+                   created_at, updated_at)
+values ('demo@example.com', '{bcrypt}$2a$10$v7ehX7oxcDyDeFOIhW3Ti.thD6EMPBFsDuCcpL0jv9oE3JrgdEiJG', 'Demo Customer',
+        '+84901234567', 'VN', 'VND', now(), now(), now()),
+       ('demo-admin@example.com', '{bcrypt}$2a$10$QinTjIyWLU8DJiCGN1FZVOqR2fDoNGXJZCmfVba24VXJMvLxUz3P2',
+        'Demo Admin', null, null, null, now(), now(), now())
+on conflict (email) do nothing;
+
+insert into user_roles (user_id, role)
+select u.id, r.role
+from users u
+join (values ('demo@example.com', 'USER'), ('demo-admin@example.com', 'ADMIN'), ('demo-admin@example.com', 'USER'))
+    as r(email, role) on r.email = u.email
+on conflict do nothing;

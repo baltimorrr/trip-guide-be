@@ -6,6 +6,7 @@ import com.company.project.search.dto.HotelSearchRequest;
 import com.company.project.search.dto.HotelSearchResult;
 import com.company.project.search.dto.SuggestionsResponse;
 import com.company.project.search.services.SearchService;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -31,7 +32,8 @@ public class SearchController {
 	/** {@code ?q=da nang&limit=5}: up to {@code limit} (max 10) places and hotels. */
 	@GetMapping("/suggestions")
 	@SecurityRequirements // public: no bearer token in the API docs
-	public SuggestionsResponse suggestions(@RequestParam String q, @RequestParam(defaultValue = "5") int limit) {
+	public SuggestionsResponse suggestions(@Parameter(example = "da nang") @RequestParam String q,
+			@RequestParam(defaultValue = "5") int limit) {
 		return searchService.suggest(q, limit);
 	}
 

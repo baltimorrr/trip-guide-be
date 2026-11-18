@@ -62,6 +62,46 @@ The database keeps running after the app stops, so restarts are fast. Stop it wi
 
 The app refuses to start if `APP_JWT_SECRET` is missing or shorter than 32 bytes, and the error says how to fix it.
 
+## Run with Docker
+
+Only Docker with Compose v2 is needed, no JDK: the jar is built inside Docker.
+
+```bash
+cp .env.example .env
+docker run --rm alpine sh -c 'head -c 32 /dev/urandom | base64'   # paste the output into APP_JWT_SECRET in .env
+docker compose --profile app up --build
+```
+
+The first build downloads Maven and every dependency, so it can take 10–15 minutes; later builds reuse them. The app
+then answers at the URLs above (port `SERVER_PORT` from `.env`, 8080 by default), with the demo hotels loaded.
+
+- Logs print in this terminal, and Ctrl+C stops the app and the database. Emailed links (verify email, reset
+  password) are only written to these logs.
+- Without the Stripe keys in `.env`, the payment endpoints answer 503. Everything else works.
+- After a code change, run the same command again: `--build` rebuilds the image.
+- `docker compose --profile app down` removes the containers. Add `-v` to delete the database too.
+
+## Try it in Swagger
+
+Under the `local` profile, every form in Swagger UI (`/swagger-ui.html`) opens filled in with values that work on
+the demo data, so most calls need only **Execute**.
+
+1. `POST /api/auth/login`: pick **Demo customer** or **Demo admin** in the example list, then Execute.
+2. Paste the response's `accessToken` into **Authorize** (top right). It lasts 15 minutes, so sign in again when calls
+   answer 401. The page keeps it across reloads.
+3. Book a room in this order: `GET /api/search/hotels` (Đà Nẵng) → `GET /api/hotels/{slug}/rooms` (Mỹ Khê) →
+   `POST /api/cart/items` → `POST /api/bookings/quote` (code `welcome10`) → `POST /api/bookings`. The dates are a
+   2-night stay 30 days ahead.
+
+Some values can only come from an earlier response:
+
+- `POST /api/bookings`: replace `expectedTotal` with the quote's `price.total`. Any other total answers 409.
+- The examples use rate plan `9` and cart line `1`, which are right on a new database. Otherwise copy `ratePlanId`
+  from the rooms and the line `id` from `GET /api/cart`.
+- `{reference}` is the booking's `reference`. Verify-email and reset-password tokens are in the links in the app log.
+- Without Stripe keys, `POST /api/bookings/{reference}/payment` answers 503, so a booking stays Pending and can't be
+  cancelled.
+
 ## Try it with curl
 
 ```bash
@@ -346,6 +386,8 @@ distances to the centre and facilities, and their room types have beds and room 
 also have descriptions, map coordinates, gallery photos with categories (lobby, restaurant, pool), room sizes and
 photos, and six policies each. Mỹ Khê's room-only rates use a two-tier cancellation policy (free until 72 hours before
 check-in, then half the stay, then all of it in the last 24 hours). There are no reviews: nothing can write one yet.
+It also adds two verified accounts with public passwords: `demo@example.com` / `demo-password-1` (customer) and
+`demo-admin@example.com` / `demo-admin-password-1` (admin), used by [Try it in Swagger](#try-it-in-swagger).
 The `test` and `prod` profiles never load it. `docker compose down -v` resets it.
 
 ## Wishlist
@@ -787,7 +829,7 @@ src/main/resources/
 │                                        free_cancellation_until(), V7 wishlists, V8 hotel policies + reviews,
 │                                        V9 carts, V10 bookings + discount codes + status triggers,
 │                                        V11 payments + refunds + Stripe events
-└── db/seed/R__demo_catalog.sql          demo hotels, local profile only
+└── db/seed/R__demo_catalog.sql          demo hotels and accounts, local profile only
 ```
 
 Code is grouped **by feature, then by layer**:

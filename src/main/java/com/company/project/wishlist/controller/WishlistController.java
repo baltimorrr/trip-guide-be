@@ -3,6 +3,7 @@ package com.company.project.wishlist.controller;
 import com.company.project.common.dto.PageResponse;
 import com.company.project.wishlist.dto.WishlistHotel;
 import com.company.project.wishlist.services.WishlistService;
+import io.swagger.v3.oas.annotations.Parameter;
 import lombok.RequiredArgsConstructor;
 import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.data.domain.Pageable;
@@ -39,14 +40,14 @@ public class WishlistController {
 	/** 204 whether the hotel is new to the wishlist or already in it; 404 when it isn't listed. */
 	@PutMapping("/{hotelId}")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
-	public void save(@AuthenticationPrincipal Jwt jwt, @PathVariable long hotelId) {
+	public void save(@AuthenticationPrincipal Jwt jwt, @Parameter(example = "1") @PathVariable long hotelId) {
 		wishlistService.save(userId(jwt), hotelId);
 	}
 
 	/** 204 whether or not the hotel was saved. */
 	@DeleteMapping("/{hotelId}")
 	@ResponseStatus(HttpStatus.NO_CONTENT)
-	public void remove(@AuthenticationPrincipal Jwt jwt, @PathVariable long hotelId) {
+	public void remove(@AuthenticationPrincipal Jwt jwt, @Parameter(example = "1") @PathVariable long hotelId) {
 		wishlistService.remove(userId(jwt), hotelId);
 	}
 

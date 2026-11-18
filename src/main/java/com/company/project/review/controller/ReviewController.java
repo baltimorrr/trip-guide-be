@@ -3,6 +3,7 @@ package com.company.project.review.controller;
 import com.company.project.common.dto.PageResponse;
 import com.company.project.review.dto.HotelReview;
 import com.company.project.review.services.ReviewService;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import lombok.RequiredArgsConstructor;
 import org.springdoc.core.annotations.ParameterObject;
@@ -28,8 +29,9 @@ public class ReviewController {
 	 */
 	@GetMapping
 	@SecurityRequirements // public: no bearer token in the API docs
-	public PageResponse<HotelReview> list(@PathVariable String slug, @ParameterObject @PageableDefault(size = 10,
-			sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
+	public PageResponse<HotelReview> list(@Parameter(example = "my-khe-beach-resort-demo") @PathVariable String slug,
+			@ParameterObject @PageableDefault(size = 10, sort = "createdAt", direction = Sort.Direction.DESC)
+			Pageable pageable) {
 		return PageResponse.from(reviewService.list(slug, pageable));
 	}
 

@@ -5,6 +5,7 @@ import java.util.List;
 import com.company.project.destination.dto.DestinationResponse;
 import com.company.project.destination.dto.PopularDestinationResponse;
 import com.company.project.destination.services.DestinationService;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,7 +32,7 @@ public class DestinationController {
 
 	@GetMapping("/{slug}")
 	@SecurityRequirements // public: no bearer token in the API docs
-	public DestinationResponse get(@PathVariable String slug) {
+	public DestinationResponse get(@Parameter(example = "vn-da-nang") @PathVariable String slug) {
 		return destinationService.findBySlug(slug);
 	}
 

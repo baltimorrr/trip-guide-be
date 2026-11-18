@@ -17,5 +17,24 @@ services:
       timeout: 3s
       retries: 10
 
+  app:
+    # Behind a profile: `./mvnw spring-boot:run` runs `docker compose up` on this file and must start Postgres only.
+    # Run the whole stack with `docker compose --profile app up --build`.
+    profiles: [app]
+    build: .
+    env_file: .env
+    environment:
+      # The packaged jar has no Docker Compose support, so it gets the database address here.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-app}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-app}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      # Fixed inside the container; SERVER_PORT from .env picks the port on the host.
+      SERVER_PORT: 8080
+    ports:
+      - "127.0.0.1:${SERVER_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:

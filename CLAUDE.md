@@ -65,12 +65,16 @@ cp .env.example .env    # then set APP_JWT_SECRET=$(openssl rand -base64 32); th
 ./mvnw test -Dtest='ProductControllerTest#userCanListAndReadProducts'  # one method
 ./mvnw package          # target/spring-base-0.0.1-SNAPSHOT.jar
 docker compose stop     # the app leaves Postgres running; `docker compose down -v` deletes the data
+docker compose --profile app up --build  # app + Postgres in Docker (Dockerfile), no JDK needed
 ```
 
 - Mockito unit tests run without Docker. Any `@IntegrationTest` or `@DataJpaTest` class needs Docker.
 - `TestProjectApplication` (in `src/test`) runs the app against a Testcontainers Postgres instead of Compose.
 - No linter or formatter is configured. Code uses tabs and Spring Framework style (e.g. `catch` on its own line).
-- Swagger UI is at `/swagger-ui.html`. It is off under the `prod` profile.
+- Swagger UI is at `/swagger-ui.html`. It is off under the `prod` profile. Its forms open filled in with values
+  that work against the demo seed: `@Schema(example)` on request DTO fields, `@Parameter(example)` on query and
+  path parameters, the login's demo-account examples on `AuthController.login`, and `OpenApiExamples` for every
+  `checkIn`/`checkOut` (a stay 30 days ahead). Give a new request field an example, or Swagger UI sends `"string"`.
 
 ## Architecture
 
@@ -319,7 +323,8 @@ The rest works as follows:
     `HotelMapper.toCancellation`, shared with the hotel page.
 - Price filter and sort compare one currency (`HotelFilter.priceCurrency`: the request's `currency`, else the most
   common selling currency of the destination's listed hotels) until currency conversion exists (C-SRCH-05).
-- Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels).
+- Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels, plus the two demo accounts that
+  Swagger's login examples use).
 
 ## Tests
 

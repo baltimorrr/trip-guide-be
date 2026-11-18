@@ -2,6 +2,7 @@ package com.company.project.cart.dto;
 
 import java.time.LocalDate;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
@@ -12,5 +13,5 @@ import jakarta.validation.constraints.NotNull;
 public record CartItemUpdateRequest(
 		@NotNull LocalDate checkIn,
 		@NotNull LocalDate checkOut,
-		@NotNull @Min(1) Integer quantity) {
+		@Schema(example = "2") @NotNull @Min(1) Integer quantity) {
 }
