@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A REST API base project: Java 21, Spring Boot 4.1 (Spring Framework 7, Security 7.1, Hibernate 7), PostgreSQL 18,
 Flyway, springdoc, Lombok, Testcontainers. It has JWT auth, role-based access, and RFC 9457 errors. `product` is a
-sample feature that shows every convention end to end. `README.md` has the endpoint table, env var table, production
-notes and the "Adding a feature" checklist.
+sample feature that shows every convention end to end. `README.md` covers setup and running only. `docs/features.md`
+has the endpoint table, each feature's rules and the known limitations; `docs/development.md` has the env var table,
+the tests table, production notes and the "Adding a feature" checklist.
 
 `USER_STORIES.md` and `DATABASE-SCHEMA.md` (dbdiagram.io DBML, 54 tables) describe the Hotel Booking Platform this base
 is meant to become. Implemented so far: the homepage stories C-HOME-01/02/03 (`search/`, `destination/`, migration V3),
@@ -388,7 +389,7 @@ The rest works as follows:
   in bytes (`UserService.exceedsPasswordByteLimit`) on top of `@Size`, because `@Size` counts characters. Login treats
   an over-long password as bad credentials.
 - List endpoints return `PageResponse.from(page)`, never a raw `Page`. The page size is capped at 100 globally.
-- README "Known limitations" lists gaps left in on purpose: emails are only logged, rate limits are in memory per
+- "Known limitations" in `docs/features.md` lists gaps left in on purpose: emails are only logged, rate limits are in memory per
   instance and per IP (many IPs can still lock known accounts), registration's 409 reveals existing emails, concurrent
   refreshes sign a device out. It also
   covers the limits of the hotel search (no currency conversion or "recommended" sort, room prices only with a tax
