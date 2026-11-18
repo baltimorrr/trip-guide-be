@@ -16,7 +16,10 @@ stay with their cancellation penalties, and reviews (C-HOTEL-01/02/03/04/06/07).
 again on every read and grouped into future bookings, and a guest's browser cart merges into it on sign-in
 (C-CART-01/02/03/04). See [Cart](#cart). A cart group is checked out into one booking: a quote with the price
 breakdown, a discount code and the taxes, then a Pending booking that holds its rooms for 15 minutes while the
-customer pays (C-BOOK-01..06; payment itself is not built yet). See [Bookings and checkout](#bookings-and-checkout).
+customer pays (C-BOOK-01..06). See [Bookings and checkout](#bookings-and-checkout). The customer pays by card
+through Stripe, and only Stripe's signed webhook confirms the booking; a declined card can be retried until the hold
+ends. The confirmed booking has a page and emails for the customer and the hotel. A paid booking can be cancelled
+for a refund to the card by its policy (C-PAY-01/02/03/05, C-MYBK-03). See [Payment and cancellation](#payment-and-cancellation).
 
 ## Stack
 
@@ -132,6 +135,12 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 | POST | `/api/cart/merge` | authenticated | `{items: [...]}` (the browser cart) → `{cart, skipped}`; 400 more items than a cart holds |
 | POST | `/api/bookings/quote` | authenticated | `{cartItemIds, discountCode?}` → hotel, lines, `price` (subtotal, discount, taxes, total) and the booker from the profile; 400 lines of several hotels or dates, or a refused code; 404 not in the cart; 409 can't be booked now |
 | POST | `/api/bookings` | authenticated | `{cartItemIds, discountCode?, expectedTotal, booker, guestName?, specialRequests?, estimatedArrival?, leadGuests?, acceptedTerms}` → 201 Pending booking; errors as for a quote, plus 400 invalid guest details or terms not accepted, 409 total changed or rooms just taken |
+| GET | `/api/bookings/{reference}` | authenticated | your booking: hotel address and contact, rooms, terms, `price`, `payment`, `cancellation` (with the refund status); 404 not yours |
+| POST | `/api/bookings/{reference}/payment` | authenticated | → `{clientSecret, amount, status, paymentStatus, payBy}` for Stripe's Payment Element, the same intent on every call; 404 not yours; 409 not Pending, hold ended, or payment being processed; 503 Stripe unavailable |
+| GET | `/api/bookings/{reference}/payment` | authenticated | `{bookingStatus, payBy, amount, payment: {status, failureReason, paidAt}}`, polled after Stripe.js returns |
+| GET | `/api/bookings/{reference}/cancellation` | authenticated | `{paid, penalty, refund, asOf}` if cancelled now; 404 not yours; 409 not Confirmed |
+| POST | `/api/bookings/{reference}/cancel` | authenticated | `{expectedRefund, reason?}` → the Cancelled booking; 409 refund changed since the preview, or not Confirmed |
+| POST | `/api/payments/stripe/webhook` | public (Stripe signature) | Stripe's events; 400 bad signature; not in the API docs |
 | GET | `/api/admin/destinations?q=` | ADMIN | paged; name prefix, featured first |
 | PUT | `/api/admin/destinations/{id}` | ADMIN | `{name, imageUrl, featuredRank}`; `featuredRank: null` = not featured |
 | POST | `/api/admin/destinations/sync` | ADMIN | runs the destination sync now: `{created, withHotels}` |
@@ -155,7 +164,7 @@ limit on top. Endpoints listed together share one count:
 | `register` | `POST /api/auth/register` | 10 per hour |
 | `email` | `POST /api/auth/verify-email/resend`, `POST /api/auth/password/forgot` | 10 per hour |
 | `search` | `GET /api/search/hotels`, `/api/search/hotels/filters`, `/api/hotels/{slug}/rooms`, `/api/cart`; `POST /api/cart/items`, `/api/cart/merge`; `PUT /api/cart/items/{id}` | 60 per minute |
-| `checkout` | `POST /api/bookings/quote`, `POST /api/bookings` | 20 per minute |
+| `checkout` | `POST /api/bookings/quote`, `POST /api/bookings`, `POST /api/bookings/{reference}/payment` | 20 per minute |
 
 A request under a specific limit also counts toward `general`. Counts come back gradually, not all at once: after 10
 sign-ins, one more is allowed every 6 seconds. Over a limit, the API answers `429` problem+json
@@ -530,9 +539,9 @@ breakdown and the guest form, then books it.
   ahead (`app.booking.hold`). Each room booked is one row, with its guests, lead guest, nightly prices and a copy of
   its cancellation policy. Each tax is one row too. The code's use is recorded, and the lines leave the cart while its
   other groups stay. A second submit of the same lines is 404.
-- **Hold expiry.** Payment (C-PAY-01) is not built yet, so every booking stays Pending until its hold ends.
-  `BookingHoldExpiryJob` runs every minute (`APP_BOOKING_EXPIRY_CRON`). It marks bookings past their hold `EXPIRED`,
-  gives their rooms back and deletes their code use.
+- **Hold expiry.** A booking not paid before its hold ends expires. `BookingHoldExpiryJob` runs every minute
+  (`APP_BOOKING_EXPIRY_CRON`). It marks bookings past their hold `EXPIRED`, gives their rooms back and deletes their
+  code use. A booking whose payment was started is skipped until Stripe has canceled that payment (see below).
 - **Status rules live in the database** (V10's triggers). A booking starts `PENDING`, and only the lifecycle's
   arrows are allowed (Pending → Confirmed → Checked-in → Checked-out; Pending → Cancelled or Expired; Confirmed →
   Cancelled or No-show). Every change is logged in `booking_status_history`, with who and why.
@@ -546,6 +555,74 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $B
        "booker": {"fullName": "Jane Doe", "email": "jane@example.com", "phone": "+84901234567", "countryCode": "VN"},
        "estimatedArrival": "18:30", "acceptedTerms": true}'
 # 409 "The total is now ..." means the price changed: quote again and send the new total
+```
+
+## Payment and cancellation
+
+A Pending booking is paid by card through Stripe (C-PAY-01/02). Card data and 3D Secure stay in Stripe's Payment
+Element in the browser; the API only creates a PaymentIntent and listens to Stripe.
+
+- **Start** (`POST /api/bookings/{reference}/payment`). It creates one PaymentIntent for the booking's total, in its
+  currency, cards only. It answers the same intent, and so the same `clientSecret`, on every later call, also after a
+  declined card. The client hands the secret and the publishable key to Stripe.js (`stripe.confirmPayment`).
+  - A booking with nothing to pay (a 100% code) is confirmed at once, and `clientSecret` is null.
+  - 409 when the booking isn't Pending, its hold ended, or its payment is already processing.
+  - 503 when Stripe can't be reached or `APP_STRIPE_SECRET_KEY` is not set.
+- **Confirmation comes only from Stripe** (`POST /api/payments/stripe/webhook`), never from the browser's redirect.
+  - Every event is checked against `APP_STRIPE_WEBHOOK_SECRET` (400 otherwise) and logged once in `stripe_events`.
+  - The PaymentIntent or refund it names is then read back from Stripe, so repeated or out-of-order events end in
+    Stripe's current state.
+  - On success, the Pending booking becomes `CONFIRMED` ("Paid by card" in its status log) and the emails go out.
+  - A declined card leaves it Pending. `GET .../payment` then shows `FAILED` with Stripe's message, and the
+    customer can retry on the same intent until `payBy`.
+  - An event that fails to process answers 500 or 503, so Stripe sends it again; the error stays on the event row.
+- **Hold end with a payment started.** `PaymentHoldExpiryJob` (on the expiry cron) cancels the PaymentIntent on
+  Stripe, and only then does the booking expire and give its rooms back. A canceled intent can never charge. If
+  Stripe answers that it already succeeded, the booking is confirmed instead. While Stripe can't be reached, the rooms
+  stay held.
+- **A payment that succeeds for a booking that is no longer Pending** (shouldn't happen) is recorded and logged as an
+  ERROR. It is not confirmed or refunded automatically: refund it in the Stripe dashboard.
+- **Booking page and emails** (C-PAY-03). `GET /api/bookings/{reference}` shows everything a confirmation lists:
+  - the hotel's address and contact
+  - rooms, guests, board, and each room's cancellation terms (from the policy it was sold with)
+  - the breakdown, the payment, and the cancellation with its refund
+  After the confirming transaction commits, the customer gets a confirmation and the hotel's partner contact
+  (`partners.contact_email`) a new-booking notice. Emails are only logged for now.
+- **Cancellation** (C-MYBK-03, the whole booking, Confirmed only).
+  - `GET .../cancellation` previews `paid`, `penalty` and `refund` at this moment. A room's penalty is its
+    policy's tier in effect, counted from the hotel's check-in time in its zone; a non-refundable rate costs the
+    whole stay.
+  - `refund = paid × (subtotal − penalty) ÷ subtotal`, rounded half up, so the discount and the taxes come back in
+    proportion.
+  - `POST .../cancel` takes the preview's refund as `expectedRefund` (409 with the new refund if a tier started in
+    between). The booking becomes `CANCELLED` (logged as the customer), its rooms go back on sale, the code use stays
+    counted, and the cancellation emails go out.
+  - A Pending booking can't be cancelled (it expires).
+- **Refunds** (C-PAY-05). The refund row is written with the cancellation and sent to Stripe after it commits, with
+  the idempotency key `refund-{reference}`.
+  - `RefundRetryJob` (`APP_REFUND_RETRY_CRON`) resends a refund that didn't reach Stripe. After 23 hours it marks it
+    `FAILED` instead (Stripe keeps keys 24 hours, so a resend could refund twice).
+  - `refund.*` webhooks keep the status (`PENDING`, `SUCCEEDED`, `FAILED`) on the booking.
+
+**Stripe setup.**
+1. Use test-mode keys from the Dashboard (Developers → API keys): `APP_STRIPE_SECRET_KEY=sk_test_...`. The
+   publishable key goes to the frontend only.
+2. Locally, `stripe listen --forward-to localhost:$SERVER_PORT/api/payments/stripe/webhook` prints the
+   `whsec_...` secret for `APP_STRIPE_WEBHOOK_SECRET`.
+3. In production, create a webhook endpoint for `/api/payments/stripe/webhook` with API version
+   `2026-10-28.endive` (the one stripe-java 34.1.0 pins) and these events:
+   - `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`,
+     `payment_intent.processing`
+   - `refund.created`, `refund.updated`, `refund.failed`
+
+```bash
+# start paying a Pending booking: hand clientSecret to Stripe.js, then poll the payment
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $BASE/api/bookings/HB7K2M4QXA/payment
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/bookings/HB7K2M4QXA/payment
+# cancel a paid booking at the previewed refund
+curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/bookings/HB7K2M4QXA/cancellation
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  $BASE/api/bookings/HB7K2M4QXA/cancel -d '{"expectedRefund": {"amount": 3960000, "currency": "VND"}}'
 ```
 
 ## Tests
@@ -600,7 +677,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $B
 | `ReviewServiceImplTest` | unit | default and tie-break order, unsupported sort and unknown hotel before any review query |
 | `RateLimitFilterTest` | full app | each limit enforced with 429 problem+json and `Retry-After`, before the body is read, per address, shared buckets, 401s count, health never limited |
 | `RateLimiterTest` | unit | capacity, gradual refill, rounded-up wait, separate buckets per client and limit, IPv6 /64 and IPv4-mapped client keys |
-| `RateLimitPolicyTest` | unit | the cart's priced calls spend from `search`, quote and booking from `checkout`, removing a line from neither, search endpoints keep theirs |
+| `RateLimitPolicyTest` | unit | the cart's priced calls spend from `search`, quote, booking and payment start from `checkout`, removing a line or polling a payment from neither, search endpoints keep theirs |
 | `CartControllerTest` | full app | every line and group field, the same line adds up (ages in any order), groups by hotel and dates, 404/400/409 checks leaving the cart unchanged, rooms shared by a group's lines of one room type, full cart, one cart per user, sign-in required |
 | `CartControllerPricesTest` | full app | changed price with old and new, not enough rooms, unavailable (closed night, inactive plan, unlisted hotel), passed check-in, same price and terms as the hotel page, group total of available lines only |
 | `CartControllerEditTest` | full app | quantity edit keeps the notice, new dates move the line at today's price, dates onto another line merge them, rejected edits change nothing, other users' lines, idempotent remove |
@@ -617,12 +694,23 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $B
 | `BookingMappingTest` | full app | a booking with rooms, nights (element collection), jsonb cancellation terms, taxes and arrival time reads back as written |
 | `RoomInventoryRepositoryTest` | full app | a hold creates missing nights, adds to existing ones until full, refuses closed nights and more rooms than the type has |
 | `TaxCalculatorTest`, `BookingReferenceTest` | unit | each tax type, validity per night, after or before the discount, included share, rounding once, other currency refused; reference format |
+| `BookingPaymentControllerTest` | full app | one PaymentIntent per booking for its total, the same secret on every start and after a decline, concurrent starts, 404 not yours, 409 hold ended or not Pending, nothing to pay confirms at once, 503 with nothing written |
+| `StripeWebhookControllerTest` | full app | a signed success confirms (logged by the system), bad or missing signature changes nothing, repeats confirm once, decline then retry, a late decline can't undo a success, success for an Expired booking only recorded, unknown intents ignored, a failed event is handled when sent again |
+| `PaymentHoldExpiryTest` | full app | an open payment is canceled before its booking expires and gives its rooms back; an intent that already succeeded confirms; while Stripe is down the rooms stay held |
+| `BookingControllerReadTest` | full app | the booking page: hotel address and contact, rooms, guests, terms, breakdown equal to the booking's, payment; 404 not yours |
+| `BookingMailListenerTest` | full app | a paid booking sends one confirmation and one hotel notice with the whole booking, never twice, also with nothing to pay; a failed email never fails the payment |
+| `BookingControllerCancelTest` | full app | free, penalty and non-refundable cancellations, rooms back on sale, refund on Stripe and its status, stale refund refused, only Confirmed bookings of your own, unsent refunds retried or given up after a day, a failed refund shown, concurrent cancels refund once |
+| `CancellationChargesTest`, `StripeAmountsTest`, `StripeSignatureVerifierTest`, `StripePaymentGatewayTest` | unit | per-room penalties and the proportional refund; Stripe's minor units; signature checks (body, secret, age, missing); 503 without keys |
 
 Each test sits in the package of the class it covers (e.g. `product/controller/ProductControllerTest`).
 Full-app tests use `@IntegrationTest` (`src/test/.../support`). Every class shares one Spring context and one
 container, so the suite stays fast. Tests create their own data with unique emails and never assume an empty database.
 `@IntegrationTest` swaps the logging mail service for `RecordingAuthMailService`, so tests follow emailed links like a user;
-`TestAuth.userToken` registers, verifies and signs in.
+`TestAuth.userToken` registers, verifies and signs in. It also swaps the booking mailer for `RecordingBookingMailService`
+(emails per booking reference) and Stripe for `FakePaymentGateway`: tests move an intent along (`succeed`, `decline`,
+`failNextCall`) and send the webhook Stripe would, signed by `StripeWebhooks` with the test secret, so the signature
+check stays real. `BookingClient.pay` does all three. `PaymentHoldExpiryTest` cancels every test's open payments of
+past holds, like `BookingHoldExpiryTest`.
 Hotel-catalog tests build hotels with `CatalogFixtures` and unique place names, then call the destination sync
 themselves (the `test` profile never schedules it). `CatalogFixtures.roomType` also adds a sellable rate plan
 (`bareRoomType` adds none). `hotelAmenity`, `roomAmenity` and `bed` attach V6 reference rows. Tax rules apply to a whole country, so tax tests use their own user-assigned country codes
@@ -677,9 +765,15 @@ src/main/java/com/company/project/
 ├── cart/                                each user's cart, priced live by the hotel page's room list
 │   ├── controller/  config/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
 │   └── expiry/                          scheduled delete of lines whose check-in passed
-├── booking/                             checkout: quote, Pending booking with a room hold, guest details
+├── booking/                             checkout: quote, Pending booking with a room hold, guest details; the
+│   │                                    booking page, cancellation, and the payment and refund rows it owns
 │   ├── controller/  config/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
-│   └── expiry/                          scheduled expiry of unpaid holds
+│   ├── expiry/                          scheduled expiry of unpaid holds
+│   └── notification/                    confirmation and cancellation emails, after commit
+├── payment/                             Stripe: payment start and status, the webhook, refunds (depends on booking/)
+│   ├── controller/  config/  model/  repository/ (+ impl/)  dto/  mapper/  services/ (+ impl/)
+│   ├── expiry/                          cancels the payments of expired holds on Stripe
+│   └── refund/                          sends refunds after commit and resends unsent ones
 ├── discount/                            discount codes and their uses
 │   └── model/  repository/ (+ impl/)  services/ (+ impl/)
 └── review/                              hotel reviews, read on the hotel page
@@ -691,7 +785,8 @@ src/main/resources/
 ├── db/migration/                        V1 users, V2 products, V3 hotel catalog + norm(), V4 tokens + sessions,
 │                                        V5 rates + taxes + night_price(), V6 amenities + beds +
 │                                        free_cancellation_until(), V7 wishlists, V8 hotel policies + reviews,
-│                                        V9 carts, V10 bookings + discount codes + status triggers
+│                                        V9 carts, V10 bookings + discount codes + status triggers,
+│                                        V11 payments + refunds + Stripe events
 └── db/seed/R__demo_catalog.sql          demo hotels, local profile only
 ```
 
@@ -768,7 +863,10 @@ Profiles: `local` is the default when none is set (reads `.env`, starts Docker C
 | `APP_DESTINATIONS_SYNC_CRON` | `0 */10 * * * *` | destination sync schedule (Spring cron, six fields); `-` disables it |
 | `APP_DESTINATIONS_SYNC_ON_STARTUP` | `true` | run the destination sync once when the app is ready |
 | `APP_CART_EXPIRY_CRON` | `0 0 * * * *` | when to delete cart lines whose check-in passed (Spring cron, six fields); `-` disables it |
-| `APP_BOOKING_EXPIRY_CRON` | `0 * * * * *` | when to expire Pending bookings whose room hold passed (Spring cron, six fields); `-` disables it |
+| `APP_BOOKING_EXPIRY_CRON` | `0 * * * * *` | when to expire Pending bookings whose room hold passed, and first cancel their started payments on Stripe (Spring cron, six fields); `-` disables it |
+| `APP_STRIPE_SECRET_KEY` | empty (card payments answer 503) | Stripe API secret key, `sk_test_...` in test mode |
+| `APP_STRIPE_WEBHOOK_SECRET` | empty (the webhook answers 503) | the webhook endpoint's signing secret, `whsec_...`; `stripe listen` prints one locally |
+| `APP_REFUND_RETRY_CRON` | `30 * * * * *` | when to resend refunds that didn't reach Stripe (Spring cron, six fields); `-` disables it |
 | `APP_RATE_LIMIT_ENABLED` | `true` | `false` turns every rate limit off, e.g. when a gateway limits instead |
 | `APP_RATE_LIMIT_EXEMPT_ADDRESSES` | empty | comma-separated client addresses never limited, e.g. an internal monitor; `127.0.0.1` in a local `.env` keeps you from limiting yourself |
 
@@ -788,8 +886,10 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
 - Build a jar with `./mvnw package` (`target/spring-base-0.0.1-SNAPSHOT.jar`), or a container image with
   `./mvnw spring-boot:build-image`.
 - Provide `APP_JWT_SECRET` from a secret manager. Changing it invalidates every issued token.
-- Set `APP_FRONTEND_URL` to the web app, and wire a real `AuthMailService` before real users sign up (see Known
-  limitations).
+- Set `APP_FRONTEND_URL` to the web app, and wire a real `AuthMailService` and `BookingMailService` before real users
+  sign up (see Known limitations).
+- Provide `APP_STRIPE_SECRET_KEY` (live mode) and `APP_STRIPE_WEBHOOK_SECRET` from a secret manager, and register the
+  webhook endpoint with the API version and events listed under [Payment and cancellation](#payment-and-cancellation).
 - Behind a reverse proxy, set `server.forward-headers-strategy=native`. Without it, every request seems to come from
   the proxy: all clients share one set of rate limits (the whole site gets 429s), and sessions record the proxy's IP.
   `native` trusts `X-Forwarded-For` only from proxies with private addresses (Tomcat's `internal-proxies`). Set
@@ -811,8 +911,9 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
    `SchedulingConfig`, `V3__create_hotel_catalog_tables.sql`, `V5__create_rate_and_tax_tables.sql`,
    `V6__create_amenity_and_bed_tables.sql`, `V7__create_wishlist_table.sql`,
    `V8__create_hotel_policy_and_review_tables.sql`, `V9__create_cart_tables.sql`,
-   `V10__create_booking_and_discount_tables.sql`, `db/seed/`, the `app.search` / `app.destinations` / `app.cart` /
-   `app.booking` settings, their `SecurityConfig` matchers and the cart and booking paths in `RateLimitPolicy`). If the copy is
+   `V10__create_booking_and_discount_tables.sql`, `payment/`, `V11__create_payment_tables.sql`, the `stripe-java`
+   dependency, `db/seed/`, the `app.search` / `app.destinations` / `app.cart` / `app.booking` / `app.stripe` /
+   `app.payment` settings, their `SecurityConfig` matchers and the cart and booking paths in `RateLimitPolicy`). If the copy is
    brand new and has never run, you may renumber migrations.
 4. `git init`.
 
@@ -863,9 +964,23 @@ table under Endpoints), and `max-tracked-clients` (50000) caps how many clients 
 - **A cart read prices each distinct stay and guests separately.** That is at most 20 room-list queries per read, and
   the cart's priced calls share the `search` rate limit.
 - **Empty `carts` rows are kept.** The expiry job deletes lines, not the carts that held them.
-- **Bookings can't be paid yet, so every one expires.** Payment and confirmation (C-PAY-01/02) come next. There is no
-  endpoint to read a booking back either: the create response has everything, and the list and detail are
-  C-MYBK-01/02.
+- **Booking emails are only logged** (`BookingMailServiceImpl`: recipient and reference at INFO, the body at DEBUG).
+  They are sent after the transaction commits, so a crash in between loses one; a real mailer needs an outbox
+  (`email_outbox` in the schema doc) and a resend (C-MYBK-04). There is no booking list yet (C-MYBK-01).
+- **Cards only.** Wallets and local methods are C-PAY-06. Stripe's special currencies are converted (ISK and UGX are
+  sent ×100), and a three-decimal currency is refused unless the amount is in tens of its smallest unit.
+- **Payments of expired holds are canceled 100 per minute.** While Stripe can't be reached, those bookings keep their
+  rooms held, with an ERROR each minute.
+- **No automatic refund of a misplaced payment.** A success Stripe reports for a booking that is no longer Pending, or
+  for another amount, is recorded and logged as an ERROR, and someone refunds it in the Stripe dashboard (decided 15
+  Nov 2026).
+- **Failed refunds need a person.** A refund Stripe reports `FAILED`, or one that didn't reach Stripe within 23 hours,
+  is logged as an ERROR; retrying it is the admin story A-PAY-01.
+- **Cancellation is whole-booking and Confirmed-only.** One room of a booking can't be cancelled on its own, and a
+  Pending booking expires instead of being cancelled. The penalty counts from the hotel's current check-in time and
+  zone, so a later change to them moves the tiers of existing bookings. A cancelled paid booking keeps its code use.
+- **`stripe_events` keeps every payload** (a failed attempt's billing details can be in it, never card numbers) with
+  no retention job. The webhook shares the per-IP `general` rate limit; Stripe retries a 429.
 - **Checkout money is in the hotel's currency only.** There is no total in the customer's display currency
   (C-BOOK-02 waits for C-SRCH-05). A fixed-amount tax or a discount code in another currency can't be used.
 - **The commission amount isn't computed.** Bookings copy the partner's `commission_rate`; `commission_minor` stays 0

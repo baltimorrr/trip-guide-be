@@ -3,6 +3,8 @@ package com.company.project.hotel.mapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -29,6 +31,7 @@ import com.company.project.hotel.dto.RoomList;
 import com.company.project.hotel.dto.RoomOption;
 import com.company.project.hotel.model.HotelPolicy;
 import com.company.project.hotel.repository.GalleryPhotoView;
+import com.company.project.hotel.repository.HotelContactView;
 import com.company.project.hotel.repository.HotelDetailView;
 import com.company.project.hotel.repository.HotelFacilityView;
 import com.company.project.hotel.repository.RoomBedView;
@@ -83,31 +86,59 @@ public class HotelMapper {
 	 */
 	public RateOption toRate(RoomRateView rate, RateOfferView offer, List<CancellationRuleView> rules,
 			SearchCriteria criteria, String currency, Instant now) {
-		ZoneId zone = ZoneId.of(offer.hotelTimezone());
-		OffsetDateTime freeUntil = FreeCancellation.until(criteria.checkIn(), offer.checkInFrom(), zone,
-				offer.refundable(), offer.penaltyFromHours(), now);
-		List<CancellationPenalty> penalties = CancellationSchedule
-			.tiers(criteria.checkIn(), offer.checkInFrom(), zone,
-					rules.stream()
-						.map(r -> new CancellationSchedule.Rule(r.hoursBeforeCheckIn(), r.penaltyType(), r.penaltyValue()))
-						.toList(),
-					rate.nightPricesMinor(), currency, now)
-			.stream()
-			.map(tier -> new CancellationPenalty(tier.from(), tier.until(), Money.ofMinor(tier.penaltyMinor(), currency)))
+		List<CancellationSchedule.Rule> scheduleRules = rules.stream()
+			.map(r -> new CancellationSchedule.Rule(r.hoursBeforeCheckIn(), r.penaltyType(), r.penaltyValue()))
 			.toList();
+		RateCancellation cancellation = toCancellation(criteria.checkIn(), offer.checkInFrom(),
+				ZoneId.of(offer.hotelTimezone()), offer.refundable(), offer.policyName(), offer.penaltyFromHours(),
+				scheduleRules, rate.nightPricesMinor(), currency, now);
 		long perNight = BigDecimal.valueOf(rate.stayPriceMinor())
 			.divide(BigDecimal.valueOf(criteria.nights()), 0, RoundingMode.HALF_UP)
 			.longValueExact();
 		return new RateOption(rate.ratePlanId(), offer.ratePlanName(), offer.boardCode(), offer.boardName(),
-				new RateCancellation(offer.refundable(), offer.policyName(), freeUntil, penalties),
-				Money.ofMinor(perNight, currency), Money.ofMinor(rate.stayPriceMinor(), currency));
+				cancellation, Money.ofMinor(perNight, currency), Money.ofMinor(rate.stayPriceMinor(), currency));
+	}
+
+	/**
+	 * One room's cancellation terms at {@code now}: the free deadline ({@link FreeCancellation#until}) and the
+	 * penalties still to come ({@link CancellationSchedule#tiers}). Shared by the room list and bookings, which keep
+	 * the policy they were sold with.
+	 *
+	 * @param penaltyFromHours the largest hours-before-check-in of a rule with a penalty; null when none has one
+	 * @param nightPricesMinor one room's price per night, first night first, in {@code currency}
+	 */
+	public RateCancellation toCancellation(LocalDate checkIn, LocalTime checkInFrom, ZoneId zone, boolean refundable,
+			String policyName, Integer penaltyFromHours, List<CancellationSchedule.Rule> rules,
+			List<Long> nightPricesMinor, String currency, Instant now) {
+		OffsetDateTime freeUntil = FreeCancellation.until(checkIn, checkInFrom, zone, refundable, penaltyFromHours,
+				now);
+		List<CancellationPenalty> penalties = CancellationSchedule
+			.tiers(checkIn, checkInFrom, zone, rules, nightPricesMinor, currency, now)
+			.stream()
+			.map(tier -> new CancellationPenalty(tier.from(), tier.until(), Money.ofMinor(tier.penaltyMinor(), currency)))
+			.toList();
+		return new RateCancellation(refundable, policyName, freeUntil, penalties);
+	}
+
+	/** A booked hotel's address, formatted on one line like the hotel page's. */
+	public HotelAddress toAddress(HotelContactView hotel) {
+		return new HotelAddress(hotel.line1(), hotel.ward(), hotel.district(), hotel.city(), hotel.countryCode(),
+				hotel.countryName(), formatAddress(hotel.line1(), hotel.ward(), hotel.district(), hotel.city(),
+						hotel.countryName(), hotel.countryCode()),
+				hotel.latitude(), hotel.longitude());
+	}
+
+	static String formatAddress(HotelDetailView hotel) {
+		return formatAddress(hotel.line1(), hotel.ward(), hotel.district(), hotel.city(), hotel.countryName(),
+				hotel.countryCode());
 	}
 
 	// Street to country, the parts that exist; the province is left out. The country code stands in for a country
 	// the destination sync has not named yet.
-	static String formatAddress(HotelDetailView hotel) {
-		String country = StringUtils.hasText(hotel.countryName()) ? hotel.countryName() : hotel.countryCode();
-		return Stream.of(hotel.line1(), hotel.ward(), hotel.district(), hotel.city(), country)
+	private static String formatAddress(String line1, String ward, String district, String city, String countryName,
+			String countryCode) {
+		String country = StringUtils.hasText(countryName) ? countryName : countryCode;
+		return Stream.of(line1, ward, district, city, country)
 			.filter(StringUtils::hasText)
 			.map(String::trim)
 			.collect(Collectors.joining(", "));

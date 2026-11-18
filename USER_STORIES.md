@@ -155,7 +155,7 @@ The platform has a client site for travellers and an admin site shared by hotel 
    - API ready: the room list takes the stay as query parameters, so the page calls it again with the new dates or guests. The client part is left.
 6. **C-HOTEL-06 Cancellation policy detail [Added] (MVP) ✅ Implemented** — As a guest, I want to see the exact cancellation deadline and penalty for each rate so that I know what I'll pay if plans change.
    - Each rate shows the free-cancellation deadline (the same as on the search card) and every penalty after it with its start, end and amount for one room, in the hotel's time zone.
-   - Until refunds (C-MYBK-03) decide otherwise, a fixed penalty is per room and a penalty in nights charges a fraction of a night pro rata.
+   - A fixed penalty is per room and a penalty in nights charges a fraction of a night pro rata; cancellations (C-MYBK-03) charge the same penalties.
 7. **C-HOTEL-07 Reviews (Phase 2) ✅ Implemented (reading)** — As a guest, I want to read reviews and scores from customers who stayed there so that I can trust the rating.
    - Only customers with a completed stay can write a review (C-MYBK-05).
    - Reviews show score, date, traveller type and text; can be sorted by newest or score.
@@ -200,7 +200,7 @@ The platform has a client site for travellers and an admin site shared by hotel 
    - Rooms are held for a short time (e.g. 15 minutes) once checkout starts; the hold is released if payment is not completed.
    - If price or availability changed, the customer must confirm the new total.
    - Two customers can never book the last room at the same time.
-   - Decided 14 Nov 2026: the hold starts when the customer submits the guest details and the Pending booking is created (every booking row needs them), not when the breakdown is first shown. The booking request carries the total the customer saw; if the total changed, nothing is booked and the customer confirms the new one. Until payment exists (C-PAY-01), every booking expires when its hold ends.
+   - Decided 14 Nov 2026: the hold starts when the customer submits the guest details and the Pending booking is created (every booking row needs them), not when the breakdown is first shown. The booking request carries the total the customer saw; if the total changed, nothing is booked and the customer confirms the new one. A booking not paid when its hold ends expires; once paid (C-PAY-01) it is confirmed.
 9. **C-BOOK-05 Guest information (MVP) ✅ Implemented** — As a customer, I want to enter the guest details so that the hotel knows who is arriving.
    - Booker: full name, email, phone, country. Pre-filled from the profile.
    - Option "I'm booking for someone else" with the main guest's name.
@@ -212,20 +212,25 @@ The platform has a client site for travellers and an admin site shared by hotel 
 
 ## 6. Client – Payment with Stripe
 
-1. **C-PAY-01 Pay by card via Stripe (MVP)** — As a customer, I want to pay securely by card through Stripe so that my booking is confirmed straight away.
+1. **C-PAY-01 Pay by card via Stripe (MVP) ✅ Implemented** — As a customer, I want to pay securely by card through Stripe so that my booking is confirmed straight away.
    - Card entry uses Stripe Checkout or Stripe Elements; card data never touches our servers.
    - 3D Secure / SCA is supported when the bank requires it.
    - The booking is created as **Pending** before payment and becomes **Confirmed** (shown as "Success") only when the Stripe webhook confirms payment — not from the browser redirect alone.
    - Webhook handling is idempotent so a repeated event never creates a duplicate booking or charge.
-2. **C-PAY-02 Payment failure (MVP)** — As a customer, I want a clear message and a retry option when payment fails so that I can complete my booking.
+   - Decided 15 Nov 2026: a Stripe PaymentIntent with the Payment Element (Stripe.js handles 3D Secure), one intent per booking, cards only for now. Each webhook event is checked by its signature and logged once, and the payment is read back from Stripe before anything changes. A payment that succeeds for a booking no longer Pending is recorded and flagged for a manual refund.
+2. **C-PAY-02 Payment failure (MVP) ✅ Implemented** — As a customer, I want a clear message and a retry option when payment fails so that I can complete my booking.
    - Booking stays Pending while the room hold lasts; after the hold expires it becomes **Expired** and rooms are released.
-3. **C-PAY-03 Booking confirmation [Added] (MVP)** — As a customer, I want a confirmation page and email with the booking number so that I have proof of my reservation.
+   - A declined card shows Stripe's message and the time the hold ends; the customer retries on the same payment. When the hold ends the payment is canceled at Stripe first, so a booking that expired can no longer be charged.
+3. **C-PAY-03 Booking confirmation [Added] (MVP) 🟡 Partly implemented** — As a customer, I want a confirmation page and email with the booking number so that I have proof of my reservation.
    - Email contains: booking reference, hotel name and address, dates, rooms, guests, board type, cancellation policy, price breakdown and hotel contact.
    - The hotel owner is notified of the new booking at the same time (O-BOOK-02).
+   - The booking page shows all of it, plus the payment. The emails go to the booker and the hotel's partner contact once the payment confirms the booking.
+   - Left: the emails are only written to the log until an email service is added (like the account emails).
 4. **C-PAY-04 Invoice / receipt [Added] (Phase 2)** — As a customer, I want to download a receipt or VAT invoice so that I can claim expenses.
-5. **C-PAY-05 Refund on cancellation [Added] (MVP)** — As a customer, I want refunds processed automatically to my card according to the cancellation policy so that I don't need to chase support.
+5. **C-PAY-05 Refund on cancellation [Added] (MVP) ✅ Implemented** — As a customer, I want refunds processed automatically to my card according to the cancellation policy so that I don't need to chase support.
    - Refund amount = amount paid − cancellation penalty; issued via the Stripe Refund API.
    - Refund status (pending, succeeded, failed) is shown on the booking.
+   - Decided 15 Nov 2026: the penalty keeps the same share of what was paid as of the room prices, so refund = amount paid × (room subtotal − penalty) ÷ room subtotal; the discount and taxes come back in proportion, and a non-refundable rate refunds 0. A refund that can't reach Stripe is retried; retrying a failed refund is the admin story A-PAY-01.
 6. **C-PAY-06 Other payment methods [Added] (Later)** — As a customer, I want to pay with wallets (Apple Pay, Google Pay) or local methods supported by Stripe so that paying is easier.
 
 ## 7. Client – My bookings
@@ -236,12 +241,13 @@ The platform has a client site for travellers and an admin site shared by hotel 
    - Sorted by check-in date, newest first.
 2. **C-MYBK-02 Booking detail (MVP)** — As a customer, I want to open a booking and see every detail so that I have everything I need for the stay.
    - Shows rooms, guests, board type, policies, price breakdown, payment and refund status, hotel contact and map.
-3. **C-MYBK-03 Cancel booking [Added] (MVP)** — As a customer, I want to cancel a booking myself so that I don't need to contact the hotel.
+3. **C-MYBK-03 Cancel booking [Added] (MVP) 🟡 Partly implemented** — As a customer, I want to cancel a booking myself so that I don't need to contact the hotel.
    - Before confirming, shows the penalty and the refund amount based on the policy and current time.
    - Non-refundable rates can still be cancelled but show a refund of 0.
    - After cancelling: status becomes Cancelled, rooms return to inventory, refund starts (C-PAY-05), emails go to customer and owner.
    - A checked-in booking can no longer be cancelled.
-   - Decide: can a single room in a multi-room booking be cancelled, or only the whole booking?
+   - Decided 15 Nov 2026: only the whole booking is cancelled, and only once it is paid (an unpaid one expires when its hold ends). The cancellation carries the refund the customer saw; if a penalty started in between, nothing changes and the customer confirms the new refund. The discount code's use stays counted.
+   - Left: the emails are only written to the log until an email service is added.
 4. **C-MYBK-04 Resend confirmation [Added] (MVP)** — As a customer, I want to resend the confirmation email so that I can find it again.
 5. **C-MYBK-05 Write a review [Added] (Phase 2) (updated)** — As a customer, I want to rate and review a hotel after check-out so that other travellers benefit.
    - Available only for Checked-out bookings, within a window (e.g. 30 days after check-out), once per booking.
@@ -412,11 +418,12 @@ The original requirements name the admin only as the approver of owner changes; 
 - [x] The cart holds rooms from any number of hotels and dates; each checkout books one hotel for one date range (one booking, one payment), checked by both the client and the API.
 - [x] Booking needs an account: guests sign in (their browser cart merges into the account) before checking out (14 Nov 2026).
 - [x] A booking is charged in the hotel's currency; the total in the customer's display currency comes with exchange rates (14 Nov 2026).
+- [x] Card payments use a Stripe PaymentIntent with the Payment Element; only Stripe's webhook confirms a booking (15 Nov 2026).
+- [x] A customer cancels the whole booking only, not one room of it (15 Nov 2026).
 
 **Open questions to decide**
 
 - [ ] Season/weekend pricing: keep reusable price rules, or only bulk-edit daily prices?
 - [ ] Who funds discount codes: the platform, the hotel, or shared?
-- [ ] Can a customer cancel one room from a multi-room booking, or only the whole booking?
 - [ ] Is "user rating" from our own reviews only at launch, and what is shown before a hotel has any reviews?
 - [ ] Does the platform collect full payment upfront (merchant model) or does the guest pay at the hotel for some rates?

@@ -89,7 +89,8 @@ app:
       search:
         capacity: 60
         period: 1m
-      # bookings/quote and bookings (checkout: priced like search; codes are checked there) share this one.
+      # bookings/quote, bookings (checkout: priced like search; codes are checked there) and bookings/{reference}/payment
+      # (calls Stripe) share this one.
       checkout:
         capacity: 20
         period: 1m
@@ -116,3 +117,11 @@ app:
     hold: 15m
     # Expires Pending bookings whose hold has passed and releases their rooms. Spring cron (six fields); "-" disables it.
     expiry-cron: ${APP_BOOKING_EXPIRY_CRON:0 * * * * *}
+  stripe:
+    # Optional: without the secret key the payment endpoints answer 503, without the webhook secret the webhook does.
+    # Test-mode keys are in the Stripe Dashboard (Developers > API keys); `stripe listen` prints a local webhook secret.
+    secret-key: ${APP_STRIPE_SECRET_KEY:}
+    webhook-secret: ${APP_STRIPE_WEBHOOK_SECRET:}
+  payment:
+    # Resends refunds that didn't reach Stripe after their cancellation. Spring cron (six fields); "-" disables it.
+    refund-retry-cron: ${APP_REFUND_RETRY_CRON:30 * * * * *}

@@ -94,6 +94,13 @@ public class Hotel extends BaseEntity {
 	@Column(name = "min_check_in_age")
 	private Short minCheckInAge;
 
+	/** The hotel's contact for guests, shown on bookings and their emails. */
+	@Column(length = 30)
+	private String phone;
+
+	@Column(length = 254)
+	private String email;
+
 	/** Facilities the hotel offers ({@code hotel_amenities}); read only through JPQL joins, never loaded by search. */
 	@ElementCollection
 	@CollectionTable(name = "hotel_amenities", joinColumns = @JoinColumn(name = "hotel_id"))

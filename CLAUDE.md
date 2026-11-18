@@ -17,9 +17,11 @@ slice of A-CONT-01 that curates destinations, the email-account stories C-AUTH-0
 migration V4; emails are only logged), the wishlist C-SRCH-08 (`wishlist/`, migration V7; search results don't
 mark saved hotels, clients draw the hearts from `GET /api/wishlist`), and the hotel page C-HOTEL-01/02/03/04/06/07
 (`hotel/` controller and service, `review/`, migration V8: `hotel_policies`, `reviews`; reviews are read-only until
-C-MYBK-05), the cart C-CART-01/02/03/04 (`cart/`, migration V9), and checkout C-BOOK-01..06 (`booking/`,
-`discount/`, migration V10: a quote, then a Pending booking that holds its rooms; payment waits for C-PAY-01, so every
-booking expires when its hold ends). The schema doc says it was generated from a `schema.sql` that is not in this repo. **Decided
+C-MYBK-05), the cart C-CART-01/02/03/04 (`cart/`, migration V9), checkout C-BOOK-01..06 (`booking/`,
+`discount/`, migration V10: a quote, then a Pending booking that holds its rooms), and card payment, confirmation,
+cancellation and refunds C-PAY-01/02/03/05 + C-MYBK-03 (`payment/`, `booking/`, migration V11: Stripe
+PaymentIntents confirmed by the webhook, the booking page and logged emails, whole-booking cancellation with a
+proportional refund). The schema doc says it was generated from a `schema.sql` that is not in this repo. **Decided
 (2026-10-28), hotel page:** `reviews` follows the doc exactly (`booking_id` not null and unique; its FK is added by
 the migration that creates `bookings`, V10), so the demo seed has no reviews; room types that don't fit the guests are
 listed last with `fitsGuests: false`, not hidden.
@@ -46,7 +48,11 @@ quantity, while adding a line again (`POST /api/cart/items`) adds the quantities
 account is required (checkout starts from the server cart, `bookings.user_id` not null); a booking is charged in the
 hotel's currency, and the display-currency total waits for exchange rates (C-SRCH-05); the booked lines leave the
 cart when the Pending booking is created; the rooms are held from that moment (the guest form is submitted), not
-from the quote, because every booking row needs the booker and accepted terms. Still open: roles
+from the quote, because every booking row needs the booker and accepted terms. **Decided (2026-11-15), payments:**
+Stripe PaymentIntent + Payment Element (not Checkout Sessions, whose 30-minute minimum can't match the 15-minute
+hold); cards only; a success reported for a booking that is no longer Pending is recorded and logged as ERROR for a
+manual refund, never auto-refunded; C-MYBK-03 cancels the whole booking, Confirmed only (a Pending one expires), and
+the refund is `paid × (subtotal − penalty) ÷ subtotal`, rounded half up once. Still open: roles
 (`customer/hotel_owner/hotel_staff/admin` vs code's `USER/ADMIN`). Ask before changing it.
 
 ## Commands
@@ -85,7 +91,8 @@ are listed in `SecurityConfig`, and every other route requires a token. Role che
 `@PreAuthorize("hasRole('ADMIN')")` on controller methods. A new public endpoint needs a matcher in `SecurityConfig`,
 and in OpenAPI an empty `@SecurityRequirements` (every operation requires a bearer token by default). The public
 account POSTs share `PUBLIC_AUTH_ENDPOINTS`, which also makes the bearer-token resolver ignore `Authorization` there,
-so an expired access token never blocks refresh or sign-out. `/api/auth/me` (`ProfileController`) reloads the user by
+so an expired access token never blocks refresh or sign-out. Stripe's webhook (`STRIPE_WEBHOOK`) is public the same
+way: Stripe signs it instead of sending a token. `/api/auth/me` (`ProfileController`) reloads the user by
 `sub`.
 
 Account rules worth knowing before changing them:
@@ -273,11 +280,43 @@ The rest works as follows:
     without `app.changed_by` an insert is logged as the booking's user and an update as the system. Hibernate
     writes every column on update, so the triggers compare old and new status.
   - `BookingHoldExpiryJob` expires Pending bookings past `hold_expires_at` in batches of 100, locked with `skip
-    locked`; it releases their rooms and deletes their `discount_redemptions`. A payment confirmation (C-PAY-01) must
-    lock the booking and check it is still Pending, the same way.
+    locked`; it releases their rooms and deletes their `discount_redemptions`. It skips bookings with an open payment
+    (see the payment bullets).
   - Discount codes are stored lowercased (`DiscountCode.normalize`); one per booking; uses are counted from
     `discount_redemptions`. "First booking only" counts the user's Pending, Confirmed, Checked-in, Checked-out and
     No-show bookings. `Money` has `@NotNull` components so a request can `@Valid` the total it sends back.
+- Payment (`payment/`, C-PAY-01/02/05) and the booking page, emails and cancellation (`booking/`, C-PAY-03,
+  C-MYBK-03). The rules maintainers would otherwise break:
+  - **Only Stripe's state confirms a booking.** The webhook verifies the signature (`StripeSignatureVerifier`, over
+    the raw body read as a String), logs the event once in `stripe_events`, then re-reads the PaymentIntent or refund
+    from Stripe and applies that state (`PaymentServiceImpl.apply`, `RefundServiceImpl.applyRefund`). Never act on
+    the event's own copy or on the browser's redirect; repeats and out-of-order delivery are harmless because of this.
+    `Payment.apply` never leaves SUCCEEDED or CANCELED.
+  - **`booking/` owns the `payments` and `refunds` entities** (its expiry, page and cancellation read them);
+    `payment/` holds everything Stripe and depends on `booking/`, never the reverse. `PaymentGateway` is the only
+    class calling Stripe's API; tests replace it with `FakePaymentGateway`.
+  - **Lock order for a write to an existing booking: its row first** (`findByReferenceAndUserIdForUpdate` /
+    `findByIdForUpdate`), then its payments, refunds and `room_inventory`. `apply` reads the payment's booking id by
+    query (`findBookingIdByPaymentIntentId`), locks the booking, then loads the payment, so it never works on a stale
+    copy. Checkout never locks an existing booking row, so this can't deadlock with it.
+  - **Before a Pending booking leaves Pending for any reason other than payment, cancel its open PaymentIntent on
+    Stripe.** `PaymentHoldExpiryJob` does it for the hold's end, and `findExpiredHoldsForUpdate` excludes bookings
+    with an open payment (`PaymentStatus.OPEN`), so rooms are released only once Stripe can no longer charge them.
+    Any future Pending → Cancelled path must do the same.
+  - One PaymentIntent per booking: created under the booking's row lock with idempotency key `payment-{reference}`
+    (references are random, so a reset database never reuses a key), and `one_open_payment` is the backstop. Refunds use
+    `refund-{reference}` (one cancellation per booking). `StripeAmounts` is the only minor-unit conversion (ISK and UGX
+    ×100, three-decimal currencies in tens).
+  - Stripe calls never run while a transaction holds booking or inventory locks, except the PaymentIntent create
+    (one row, on purpose). Mail and refunds go out after commit: `BookingConfirmed` and `BookingCancelled` are
+    published inside the transaction and handled by `@TransactionalEventListener(AFTER_COMMIT)` listeners, whose reads
+    and writes use `REQUIRES_NEW` (the committed transaction's resources are still bound).
+  - `CancellationCharges` is the only penalty and refund computation (preview and cancel share it); a room's penalty
+    is its stored policy's `CancellationSchedule` tier in effect, a non-refundable room its whole stay. Cancel calls
+    `RoomInventoryRepository.release` before `Booking.cancel`, because release reads the booking's ACTIVE rooms.
+  - A booking's response is built from what it stored (`BookingResponses` + the entity-based
+    `BookingMapper.toBooking`), for the create response, the page and the emails alike. Room terms come from
+    `HotelMapper.toCancellation`, shared with the hotel page.
 - Price filter and sort compare one currency (`HotelFilter.priceCurrency`: the request's `currency`, else the most
   common selling currency of the destination's listed hotels) until currency conversion exists (C-SRCH-05).
 - Under the `local` profile only, Flyway also loads `db/seed/` (demo hotels).
@@ -293,7 +332,13 @@ The rest works as follows:
   bootstrap admin from `application-test.yml`) and `bearer(token)`. Tests use the AssertJ `MockMvcTester` API.
 - `@IntegrationTest` imports `RecordingAuthMailService.Config`, a `@Primary` mailer that keeps the last link per email.
   Read links with its static `verificationToken(email)` / `resetToken(email)`; don't add a mailer mock (that would
-  start a second context). `app.auth.email-cooldown` is 0 in tests.
+  start a second context). `app.auth.email-cooldown` is 0 in tests. It also imports `RecordingBookingMailService.Config`
+  (booking emails per reference, `failNext()`) and `FakePaymentGateway.Config`, the `@Primary` Stripe: autowire
+  `FakePaymentGateway`, move intents along (`succeed`, `decline`, `failRefund`, `failNextCall`) and send the webhook
+  with `StripeWebhooks.send` (signed with the test profile's secret, so the real verifier runs). `BookingClient` (public
+  for the payment tests) books (`bookRooms`), pays (`pay`) and calls any booking path. `PaymentHoldExpiryTest`
+  cancels every test's open payments of past holds and `RefundService.retryUnsent()` resends every test's unsent
+  refunds; a test that needs to be first in that batch dates its row older than the rest (`1 day`).
 - `CatalogFixtures` inserts partners, hotels, room types, rate plans, rules, inventory, photos and tax rules with
   `JdbcClient` (test code only), since no hotel write API exists yet. `roomType` adds a sellable default rate plan
   (`bareRoomType` none). Tax rules apply to a whole country, so tax tests use their own `XA`–`XZ` codes, never `VN`.
@@ -344,9 +389,11 @@ The rest works as follows:
   covers the limits of the hotel search (no currency conversion or "recommended" sort, room prices only with a tax
   flag, even split of guests per room, the cost of the filter counts), of the hotel page (read-only reviews and
   stored ratings, per-room `FIXED` penalties, exact `roomsLeft`), of the cart (merged lines start at the merge's
-  price, one room-list query per distinct stay, empty cart rows kept) and of checkout (no payment, so every booking
-  expires; no booking GET; hotel currency only; commission amount not computed; hold rows copy `total_rooms`; codes
-  and taxes written by SQL).
+  price, one room-list query per distinct stay, empty cart rows kept), of checkout (hotel currency only; commission
+  amount not computed; hold rows copy `total_rooms`; codes and taxes written by SQL) and of payment (booking emails
+  only logged and lost on a crash after commit; cards only; 100 expired-hold cancels per minute; misplaced payments
+  and failed refunds handled by hand; whole-booking, Confirmed-only cancellation counted from the hotel's current
+  check-in time; `stripe_events` payloads kept).
 - JPQL bulk updates bypass auditing and versioning: write `update versioned X` and set `updatedAt` yourself (see
   `UserSessionRepositoryImpl`).
 - Public endpoints need a `permitAll` matcher in `SecurityConfig` and an empty `@SecurityRequirements` on the

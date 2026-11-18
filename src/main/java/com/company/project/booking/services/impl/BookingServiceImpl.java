@@ -15,6 +15,7 @@ import java.util.stream.IntStream;
 
 import com.company.project.booking.config.BookingProperties;
 import com.company.project.booking.dto.BookerDetails;
+import com.company.project.booking.dto.BookingNotice;
 import com.company.project.booking.dto.BookingRequest;
 import com.company.project.booking.dto.BookingResponse;
 import com.company.project.booking.dto.CheckoutQuote;
@@ -60,6 +61,7 @@ import com.company.project.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -92,6 +94,8 @@ public class BookingServiceImpl implements BookingService {
 	private final DiscountService discounts;
 
 	private final BookingMapper bookingMapper;
+
+	private final BookingResponses responses;
 
 	private final BookingProperties properties;
 
@@ -146,7 +150,24 @@ public class BookingServiceImpl implements BookingService {
 			discounts.redeem(charges.discount(), booking.getId(), userId);
 		}
 		cartItems.deleteAllByIdInBatch(group.lines().stream().map(line -> line.line().itemId()).toList());
-		return bookingMapper.toBooking(booking, group, charges, now);
+		return responses.of(booking, now);
+	}
+
+	@Override
+	public BookingResponse find(long userId, String reference) {
+		Booking booking = bookings.findByReferenceAndUserId(reference, userId)
+			.orElseThrow(() -> new ResourceNotFoundException("Booking", reference));
+		return responses.of(booking, Instant.now());
+	}
+
+	// A new transaction: the listener that calls it runs after the changing transaction committed, whose resources
+	// are still bound to the thread.
+	@Override
+	@Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+	public BookingNotice notice(long bookingId) {
+		Booking booking = bookings.findById(bookingId).orElseThrow();
+		return new BookingNotice(responses.of(booking, Instant.now()),
+				hotels.findPartnerContactEmail(booking.getHotelId()).orElse(null));
 	}
 
 	@Override

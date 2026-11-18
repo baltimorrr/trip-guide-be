@@ -33,9 +33,9 @@ public enum RateLimitPolicy {
 
 	/**
 	 * Checkout: each call prices a cart group with the search's SQL, and a quote is where discount codes could be
-	 * guessed.
+	 * guessed. Starting a payment calls Stripe.
 	 */
-	CHECKOUT(post("/api/bookings/quote", "/api/bookings"));
+	CHECKOUT(post("/api/bookings/quote", "/api/bookings", "/api/bookings/*/payment"));
 
 	private final RequestMatcher matcher;
 

@@ -914,11 +914,16 @@ updated_at timestamptz [not null, default: `now()`]
 
 indexes {
 booking_id [name: 'one_successful_payment', note: 'UNIQUE only WHERE (status = \'succeeded\'::payment_status)']
+booking_id [name: 'one_open_payment', note: 'UNIQUE only WHERE status IN (requires_payment, processing, failed)']
 booking_id [name: 'payments_booking_id_idx']
 }
 
 Note: '''
 CHECK ((amount_minor >= 0))
+CHECK (((status <> 'succeeded'::payment_status) OR (paid_at IS NOT NULL)))
+One Stripe PaymentIntent per booking; status follows Stripe's state of the intent. failed = the last attempt was
+declined and the customer can retry on the same intent while the hold lasts; failure_reason holds Stripe's message.
+succeeded and canceled never change. stripe_checkout_session_id stays null (PaymentIntent integration, 15 Nov 2026).
 '''
 }
 
@@ -937,10 +942,13 @@ updated_at timestamptz [not null, default: `now()`]
 
 indexes {
 booking_id [name: 'refunds_booking_id_idx']
+created_at [name: 'refunds_unsent', note: 'partial: WHERE stripe_refund_id IS NULL AND status = \'pending\'']
 }
 
 Note: '''
 CHECK ((amount_minor > 0))
+Written with the cancellation and sent to Stripe after it commits; stripe_refund_id is null until Stripe answered.
+initiated_by null = the system.
 '''
 }
 

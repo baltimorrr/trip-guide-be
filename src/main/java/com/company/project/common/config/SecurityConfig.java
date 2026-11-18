@@ -49,6 +49,15 @@ public class SecurityConfig {
 		.map(path -> (RequestMatcher) PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, path))
 		.toList());
 
+	/**
+	 * Stripe's webhook: no token, as Stripe signs each call instead (checked by the payment feature). It ignores any
+	 * Authorization header too, so a stray one can't turn Stripe's call into a 401.
+	 */
+	private static final RequestMatcher STRIPE_WEBHOOK = PathPatternRequestMatcher.withDefaults()
+		.matcher(HttpMethod.POST, "/api/payments/stripe/webhook");
+
+	private static final RequestMatcher NO_BEARER_TOKEN = new OrRequestMatcher(PUBLIC_AUTH_ENDPOINTS, STRIPE_WEBHOOK);
+
 	@Bean
 	SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter jwtAuthenticationConverter,
 			ProblemDetailSecurityHandler problemHandler, RateLimitProperties rateLimits,
@@ -64,6 +73,7 @@ public class SecurityConfig {
 				.formLogin(AbstractHttpConfigurer::disable)
 				.authorizeHttpRequests(auth -> auth
 						.requestMatchers(PUBLIC_AUTH_ENDPOINTS).permitAll()
+						.requestMatchers(STRIPE_WEBHOOK).permitAll()
 						// Homepage and hotel pages: guests search and browse without an account. Keep authenticated
 						// hotel endpoints (owners, admins) out of /api/hotels.
 						.requestMatchers(HttpMethod.GET, "/api/search/**", "/api/destinations/**", "/api/hotels/**")
@@ -77,7 +87,7 @@ public class SecurityConfig {
 				.oauth2ResourceServer(oauth2 -> oauth2
 						// A client whose access token expired must still be able to refresh, sign in or sign out,
 						// so the public account endpoints never read the header.
-						.bearerTokenResolver(request -> PUBLIC_AUTH_ENDPOINTS.matches(request) ? null : bearerTokens.resolve(request))
+						.bearerTokenResolver(request -> NO_BEARER_TOKEN.matches(request) ? null : bearerTokens.resolve(request))
 						.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter))
 						.authenticationEntryPoint(problemHandler))
 				// ...and this one handles requests with no token at all, plus 403s.

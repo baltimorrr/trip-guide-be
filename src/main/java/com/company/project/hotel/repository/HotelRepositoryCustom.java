@@ -67,6 +67,12 @@ public interface HotelRepositoryCustom {
 	/** The commission, in percent, the platform takes on the hotel's bookings: its partner's rate. */
 	BigDecimal findCommissionRate(long hotelId);
 
+	/** The hotel's name, address, contact and stay times, listed or not (bookings and their emails show them). */
+	Optional<HotelContactView> findContact(long hotelId);
+
+	/** Where the hotel's new and cancelled bookings are announced: its partner's contact email. */
+	Optional<String> findPartnerContactEmail(long hotelId);
+
 	/**
 	 * For each filter option, how many listed hotels inside the destination would show if that option were picked
 	 * (C-SRCH-02). Within an OR group (stars, accommodation type, board, cancellation, bed type) the group's own

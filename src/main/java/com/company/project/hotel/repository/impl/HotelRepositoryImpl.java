@@ -16,6 +16,7 @@ import com.company.project.hotel.repository.FilterGroup;
 import com.company.project.hotel.repository.FilterOptionView;
 import com.company.project.hotel.repository.GalleryPhotoView;
 import com.company.project.hotel.repository.HotelCardView;
+import com.company.project.hotel.repository.HotelContactView;
 import com.company.project.hotel.repository.HotelDetailView;
 import com.company.project.hotel.repository.HotelFacilityView;
 import com.company.project.hotel.repository.HotelFilter;
@@ -396,6 +397,22 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 	private static final String COMMISSION_RATE = """
 			select p.commission_rate from hotels h join partners p on p.id = h.partner_id where h.id = :hotelId""";
 
+	// Native for the same reason as COMMISSION_RATE.
+	private static final String PARTNER_CONTACT_EMAIL = """
+			select p.contact_email from hotels h join partners p on p.id = h.partner_id where h.id = :hotelId""";
+
+	// Not filtered by HOTEL_LISTED: a booking keeps showing its hotel after the listing ends. The COUNTRY destination
+	// row only gives the country's current name, as on the hotel page.
+	private static final String CONTACT = """
+			select new com.company.project.hotel.repository.HotelContactView(
+			       h.id, h.slug, h.name, a.line1, a.ward, a.district, a.city, a.countryCode, c.name, a.latitude,
+			       a.longitude, h.phone, h.email, h.timezone, h.checkInFrom, h.checkOutUntil)
+			from Hotel h
+			join h.address a
+			left join Destination c on c.countryCode = a.countryCode and c.deletedAt is null
+			     and c.type = com.company.project.destination.model.DestinationType.COUNTRY
+			where h.id = :hotelId""";
+
 	private static final String HOTEL_PHOTOS = """
 			select new com.company.project.hotel.repository.HotelPhotoView(p.hotel.id, p.url)
 			from HotelPhoto p
@@ -481,6 +498,22 @@ public class HotelRepositoryImpl implements HotelRepositoryCustom {
 		return (BigDecimal) entityManager.createNativeQuery(COMMISSION_RATE)
 			.setParameter("hotelId", hotelId)
 			.getSingleResult();
+	}
+
+	@Override
+	public Optional<HotelContactView> findContact(long hotelId) {
+		return entityManager.createQuery(CONTACT, HotelContactView.class)
+			.setParameter("hotelId", hotelId)
+			.getResultStream()
+			.findFirst();
+	}
+
+	@Override
+	public Optional<String> findPartnerContactEmail(long hotelId) {
+		return entityManager.createNativeQuery(PARTNER_CONTACT_EMAIL, String.class)
+			.setParameter("hotelId", hotelId)
+			.getResultStream()
+			.findFirst();
 	}
 
 	@Override

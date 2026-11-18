@@ -1,5 +1,6 @@
 package com.company.project.booking.services;
 
+import com.company.project.booking.dto.BookingNotice;
 import com.company.project.booking.dto.BookingRequest;
 import com.company.project.booking.dto.BookingResponse;
 import com.company.project.booking.dto.CheckoutQuote;
@@ -8,7 +9,7 @@ import com.company.project.booking.dto.CheckoutRequest;
 /**
  * Checkout of one cart group, the rooms of one hotel for one date range, into one booking (C-BOOK-01..06). Lines are
  * priced by the hotel page's room list, like the cart, then the discount code and the hotel country's taxes are
- * added. Payment comes with C-PAY-01.
+ * added. The booking is then paid by card through {@code PaymentService} (C-PAY-01), which confirms it.
  */
 public interface BookingService {
 
@@ -28,6 +29,19 @@ public interface BookingService {
 	 * when the rooms were just taken by another booking. Nothing is written when it throws.
 	 */
 	BookingResponse create(long userId, BookingRequest request);
+
+	/**
+	 * The user's booking as its confirmation page shows it (C-PAY-03): hotel address and contact, rooms, guests,
+	 * terms, breakdown, payment and, once cancelled, the refund. ResourceNotFoundException (404) for another user's
+	 * booking or an unknown reference.
+	 */
+	BookingResponse find(long userId, String reference);
+
+	/**
+	 * The booking and the hotel's contact for its emails, read in a new transaction: call it after the transaction
+	 * that changed the booking has committed.
+	 */
+	BookingNotice notice(long bookingId);
 
 	/**
 	 * Expires up to 100 Pending bookings whose hold has passed, oldest first: their rooms go back on sale and their

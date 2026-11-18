@@ -15,14 +15,16 @@ import org.springframework.test.context.ActiveProfiles;
  * Full-application test against a real PostgreSQL container.
  * <p>
  * Every integration test uses this one annotation so Spring caches a single application
- * context (and therefore a single container) for the whole test run. Emailed links are recorded by
- * {@link RecordingAuthMailService} instead of being logged.
+ * context (and therefore a single container) for the whole test run. Emails are recorded by
+ * {@link RecordingAuthMailService} and {@link RecordingBookingMailService} instead of being logged, and Stripe is
+ * replaced by {@link FakePaymentGateway}.
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import({ TestcontainersConfiguration.class, RecordingAuthMailService.Config.class })
+@Import({ TestcontainersConfiguration.class, RecordingAuthMailService.Config.class,
+		RecordingBookingMailService.Config.class, FakePaymentGateway.Config.class })
 @ActiveProfiles("test")
 public @interface IntegrationTest {
 }

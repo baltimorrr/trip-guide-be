@@ -1,5 +1,6 @@
 package com.company.project.booking.model;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -72,6 +73,9 @@ public class BookingRoom extends BaseEntity {
 	@Column(nullable = false, length = 10)
 	private BookingRoomStatus status;
 
+	@Column(name = "cancelled_at")
+	private Instant cancelledAt;
+
 	@ElementCollection
 	@CollectionTable(name = "booking_room_nights", joinColumns = @JoinColumn(name = "booking_room_id"))
 	@OrderBy("stayDate")
@@ -97,6 +101,16 @@ public class BookingRoom extends BaseEntity {
 
 	public RoomGuests guests() {
 		return RoomGuests.of(adults, childAges);
+	}
+
+	public boolean isActive() {
+		return status == BookingRoomStatus.ACTIVE;
+	}
+
+	/** The room no longer counts against inventory; the caller has given its nights back. */
+	void cancel(Instant now) {
+		status = BookingRoomStatus.CANCELLED;
+		cancelledAt = now;
 	}
 
 	void attachTo(Booking booking) {

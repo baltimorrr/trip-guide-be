@@ -31,3 +31,11 @@ app:
   booking:
     # Tests call BookingService.expireHolds() themselves.
     expiry-cron: "-"
+  payment:
+    # Tests call RefundService.retryUnsent() themselves.
+    refund-retry-cron: "-"
+  stripe:
+    # TEST ONLY. Stripe is never called in tests (FakePaymentGateway replaces the gateway); webhook tests sign their
+    # requests with this secret.
+    secret-key: sk_test_only_never_sent_to_stripe
+    webhook-secret: whsec_test_only_c2lnbmluZy1zZWNyZXQtZm9yLXRlc3Rz

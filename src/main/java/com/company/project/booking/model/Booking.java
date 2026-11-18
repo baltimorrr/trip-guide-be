@@ -29,8 +29,8 @@ import org.hibernate.type.descriptor.jdbc.LocalTimeJdbcType;
  * discount and taxes added to it, so {@code total = subtotal - discount + taxes on top + fee} always holds (the
  * table checks it too). Status changes are checked and logged by the database (V10's triggers).
  * <p>
- * The display-currency, commission amount, lifecycle-time and cancellation columns are not mapped yet: payment
- * (C-PAY-01), cancellation (C-MYBK-03) and payouts (A-PAY-02) add what they write.
+ * The display-currency, commission amount and check-in/check-out time columns are not mapped yet: currency
+ * conversion (C-SRCH-05), payouts (A-PAY-02) and the owner's booking actions (O-BOOK-03) add what they write.
  */
 @Entity
 @Table(name = "bookings")
@@ -115,6 +115,24 @@ public class Booking extends BaseEntity {
 	@Column(name = "hold_expires_at")
 	private Instant holdExpiresAt;
 
+	/** When the payment confirmed it. */
+	@Column(name = "confirmed_at")
+	private Instant confirmedAt;
+
+	@Column(name = "cancelled_at")
+	private Instant cancelledAt;
+
+	/** The user who cancelled it; null when the system did. */
+	@Column(name = "cancelled_by")
+	private Long cancelledBy;
+
+	@Column(name = "cancel_reason", length = 500)
+	private String cancelReason;
+
+	/** The cancellation policy's penalty when it was cancelled, in minor units of {@link #currency}. */
+	@Column(name = "cancellation_fee_minor")
+	private Long cancellationFeeMinor;
+
 	@OneToMany(mappedBy = "booking", cascade = CascadeType.ALL)
 	@OrderBy("id")
 	private List<BookingRoom> rooms = new ArrayList<>();
@@ -169,6 +187,33 @@ public class Booking extends BaseEntity {
 			taxMinor += tax.getAmountMinor();
 		}
 		updateTotal();
+	}
+
+	/** Paid (or nothing to pay): the rooms it holds stay booked. Only a Pending booking is confirmed. */
+	public void confirm(Instant now) {
+		if (status != BookingStatus.PENDING) {
+			throw new IllegalStateException("A " + status + " booking can't be confirmed");
+		}
+		status = BookingStatus.CONFIRMED;
+		confirmedAt = now;
+	}
+
+	/**
+	 * The customer cancelled the whole booking (C-MYBK-03); the caller has given its rooms back and refunds what the
+	 * policy allows. Only a Confirmed booking is cancelled this way.
+	 *
+	 * @param penaltyMinor what the cancellation policy keeps, in minor units of {@link #currency}
+	 */
+	public void cancel(Instant now, long userId, String reason, long penaltyMinor) {
+		if (status != BookingStatus.CONFIRMED) {
+			throw new IllegalStateException("A " + status + " booking can't be cancelled");
+		}
+		status = BookingStatus.CANCELLED;
+		cancelledAt = now;
+		cancelledBy = userId;
+		cancelReason = trimToNull(reason);
+		cancellationFeeMinor = penaltyMinor;
+		rooms.forEach(room -> room.cancel(now));
 	}
 
 	/** The hold ended unpaid; the caller gives the rooms back. Only a Pending booking expires. */

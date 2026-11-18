@@ -15,18 +15,23 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import com.company.project.support.CatalogFixtures;
+import com.company.project.support.FakePaymentGateway;
+import com.company.project.support.StripeWebhooks;
 import com.jayway.jsonpath.JsonPath;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 
-/** A freshly signed-up user who fills a cart and checks it out, so a test sees only its own cart and bookings. */
-final class BookingClient {
+/**
+ * A freshly signed-up user who fills a cart, checks it out, pays and cancels, so a test sees only its own cart and
+ * bookings. Public for the payment tests.
+ */
+public final class BookingClient {
 
-	final long userId;
+	public final long userId;
 
-	final String email;
+	public final String email;
 
 	private final MockMvcTester mvc;
 
@@ -39,10 +44,48 @@ final class BookingClient {
 		this.userId = userId;
 	}
 
-	static BookingClient signUp(MockMvcTester mvc, CatalogFixtures catalog) {
+	public static BookingClient signUp(MockMvcTester mvc, CatalogFixtures catalog) {
 		String email = uniqueEmail();
 		registerVerified(mvc, email, USER_PASSWORD);
 		return new BookingClient(mvc, accessToken(mvc, email, USER_PASSWORD), email, catalog.userId(email));
+	}
+
+	/**
+	 * Books {@code quantity} rooms of 2 adults of the rate plan for the stay, at the quoted total, and returns the
+	 * Pending booking's reference. {@code code} null for none.
+	 */
+	public String bookRooms(long ratePlanId, LocalDate checkIn, LocalDate checkOut, int quantity, String code) {
+		long line = addToCart(ratePlanId, checkIn, checkOut, quantity, 2);
+		MvcTestResult booked = book(booking(total(quote(code, line)), line).code(code));
+		assertThat(booked).hasStatus(201);
+		return JsonPath.read(body(booked), "$.reference");
+	}
+
+	/** {@code POST /api/bookings/{reference}/payment}. */
+	public MvcTestResult startPayment(String reference) {
+		return post("/api/bookings/" + reference + "/payment", "");
+	}
+
+	/**
+	 * Pays the booking the way the browser and Stripe would: starts the payment, lets the fake Stripe succeed the
+	 * intent and sends the signed webhook that confirms the booking. Returns the intent's id.
+	 */
+	public String pay(String reference, FakePaymentGateway stripe) {
+		assertThat(startPayment(reference)).hasStatusOk();
+		String intentId = stripe.intentIdOf(reference);
+		stripe.succeed(intentId);
+		assertThat(StripeWebhooks.send(mvc, "payment_intent.succeeded", intentId)).hasStatusOk();
+		return intentId;
+	}
+
+	/** {@code GET /api/bookings/{reference}/payment}. */
+	public MvcTestResult payment(String reference) {
+		return get("/api/bookings/" + reference + "/payment");
+	}
+
+	/** {@code GET} of any path, with this user's token. */
+	public MvcTestResult get(String uri) {
+		return mvc.get().uri(uri).header(HttpHeaders.AUTHORIZATION, bearer(token)).exchange();
 	}
 
 	/** Adds rooms to the cart ({@code adults} and {@code childAges} per room) and returns the line's id. */
@@ -114,11 +157,13 @@ final class BookingClient {
 		return value == null ? "null" : "\"" + value + "\"";
 	}
 
-	static long money(Object money) {
+	/** The amount of a Money object in a response, e.g. {@code {"amount": 2400000, "currency": "VND"}}. */
+	public static long money(Object money) {
 		return ((Number) ((Map<?, ?>) money).get("amount")).longValue();
 	}
 
-	private MvcTestResult post(String uri, String json) {
+	/** {@code POST} of any path with a JSON body, with this user's token. */
+	public MvcTestResult post(String uri, String json) {
 		return mvc.post()
 			.uri(uri)
 			.header(HttpHeaders.AUTHORIZATION, bearer(token))
